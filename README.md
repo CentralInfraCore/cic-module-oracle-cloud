@@ -1,37 +1,65 @@
-# CIC WASM Module Template
+# cic-module-oracle-cloud
 
-This repository is a template for building a **CIC iSDK guest module**: a small
-WASM binary (built with TinyGo) that the relay host
-(`CIC-Relay/core/cabinet`) loads via [wazero](https://wazero.io) and drives
-through the `Call` ABI, with a built-in, cryptographically signed release
-pipeline.
+A CIC provisioner module targeting **Oracle Cloud Infrastructure (OCI)** — the
+first repository in the `cic-module-<provider>` namespace. Sibling modules
+(`cic-module-aws`, `cic-module-azure`, …) would follow the same shape.
 
-## Overview
+Derived from the [base-repo](https://github.com/CentralInfraCore/base-repo)
+`wasm/main` template: a CIC iSDK guest module — a small WASM binary that the
+relay host (`CIC-Relay/core/cabinet`) loads via [wazero](https://wazero.io) and
+drives through the `Call` ABI, with a cryptographically signed release pipeline.
 
-- **Module:** Implement your domain logic in `module/handlers.go` against the
-  iSDK v1 `Call` ABI (`init` / `process` / `get` / `notify`). See the
-  **[WASM Module Authoring Guide](docs/en/wasm-module-authoring.md)** for the
-  full contract and error-typing conventions.
-- **Build & host-load test:** `make wasm.build` compiles the guest module with
-  TinyGo; `make wasm.test` host-loads `module/module.wasm` against the same
-  wazero runtime used by the relay cabinet and exercises the ABI.
-- **ABI manifest:** `project.yaml`'s `abi:` block (exports/operations/
-  envelopeVersion) declares the guest <-> host contract; `make wasm.test`
-  fails if `module/module.wasm` doesn't export everything it declares. See
-  **[WASM ABI Contract](docs/contracts/en/wasm-abi.md)**.
-- **Provenance:** Every release signs both the source-spec checksum
-  (`project.yaml`) and the built artifact's `buildHash`
-  (`sha256(module/module.wasm)`), so a released module is a "provable, signed
-  artifact" end to end.
+## What it does
 
-For a detailed explanation of the system's architecture and the release
-process, please see the **[Architecture Overview](docs/en/architecture.md)**.
+Given a declared desired OCI state (an intent), this module drives the OCI REST
+API to reconcile it. Because a WASM guest is sandboxed — no sockets, no clock,
+no ambient I/O — it does **not** call OCI directly. It reaches the network and
+secrets through **host functions** exposed by the relay's capability boundary,
+backed by the relay's existing Rust machinery:
+
+| Need | Backed by (CIC-Relay) |
+|---|---|
+| Outbound HTTP to OCI's REST API | `http-executor` — `reqwest` with an `EgressPolicy` host allowlist |
+| Request signing / secret retrieval | `vault-adapter` — Vault transit + PKI countersign, secrets as `SecretString` |
+
+The I/O happens at the host boundary, so each call is recorded — the module's
+computation stays a deterministic function of `(input intent + host responses)`,
+which keeps it provable under the CIC ProofTrace model.
+
+```
+[cic-module-oracle-cloud]              [CIC-Relay]
+  WASM guest (this repo)                 host functions (capability boundary)
+    Call(op, auth, data) ──ABI──►          http.request ─► http-executor → OCI REST
+    imports: http.request, vault.sign      vault.sign   ─► vault-adapter (transit/countersign)
+    OCI provisioning logic                 responses recorded into the ProofTrace
+```
+
+## Status — scaffold
+
+This is the template seed. What is **not** yet built:
+
+- **The relay-side bridge.** The relay today exposes only a `git` host module to
+  WASM guests (`cmd/relay/git_host_funcs.go`). The `http-executor` and
+  `vault-adapter` live on the native FFI path, **not** yet as wazero host
+  functions. Exposing them as host functions — following the `git` pattern — is
+  the enabling work this module depends on.
+- **The `imports:` contract.** `abi.schema.yaml` today describes only `exports`.
+  A guest that imports host functions needs an import surface added to the
+  contract.
+- **The OCI provisioning logic** in `module/handlers.go` (or its Rust
+  equivalent).
+
+## Open decision — Go or Rust
+
+The seed carries the template's Go/TinyGo scaffold, which keeps CI green and
+demonstrates the `Call` ABI. The final language is undecided: the host-function
+ABI is defined at the WASM import boundary (`(i32,i32,i32,i32)->i32`, JSON in
+linear memory) and is language-neutral, so a Rust guest could import the same
+host module. Both options stay open.
 
 ---
 
 ## Getting Started
-
-This section will guide you through the initial setup of the project.
 
 ### Prerequisites
 
@@ -42,60 +70,47 @@ This section will guide you through the initial setup of the project.
 
 ### Quick Start
 
-1.  **Start the Vault Signing Agent:**
-    A helper script is provided to run a local Vault server for development. This must be running in a separate terminal.
-    ```sh
-    # See the script's --help for all options
-    ./tools/vault-sign-agent.sh -k <key.pem> -c <cert.crt> --root-ca-file <root.pem>
-    ```
+1. **Start the Vault Signing Agent** (separate terminal):
+   ```sh
+   ./tools/vault-sign-agent.sh -k <key.pem> -c <cert.crt> --root-ca-file <root.pem>
+   ```
+2. **Initialize the environment:**
+   ```sh
+   make infra.deps
+   make build
+   make up
+   make repo.init
+   ```
+3. **Build and test the WASM module:**
+   ```sh
+   make wasm.build
+   make wasm.test
+   ```
 
-2.  **Initialize the Environment:**
-    These commands will install dependencies, build the Docker image, start the container, and set up Git hooks.
-    ```sh
-    make infra.deps
-    make build
-    make up
-    make repo.init
-    ```
-
-3.  **Build and test the WASM module:**
-    ```sh
-    make wasm.build
-    make wasm.test
-    ```
-
-Your environment is now ready. For a detailed guide on day-to-day development and creating releases, please see the **[Developer Workflow](docs/en/workflow.md)**.
+See the [Developer Workflow](docs/en/workflow.md) for day-to-day development.
 
 ---
 
 ## Makefile Commands
 
-A `Makefile` provides a simple interface for all common tasks.
+- `make wasm.build` — build `module/module.wasm` with TinyGo and compute its `buildHash`.
+- `make wasm.rebuild-verify` — rebuild to a scratch path and verify sha256 matches `project.yaml`'s `metadata.buildHash`.
+- `make wasm.test` — host-load `module.wasm` against the relay cabinet ABI (wazero).
+- `make check` — all code-quality checks (lint, format, typecheck).
+- `make golang.quality` — Go quality gate (fmt/vet/lint/vuln) for `module/`.
+- `make test` — Python test suite.
+- `make manifest-verify` / `make manifest-update` — verify/regenerate `MANIFEST.sha256`.
+- `make verify-release` — offline release-readiness check (schema, buildHash, ABI exports, manifest, provenance).
+- `make release VERSION=v1.2.3` — create a signed release.
 
-- `make wasm.build`: Build `module/module.wasm` with TinyGo and compute its `buildHash`.
-- `make wasm.rebuild-verify`: Rebuild the guest module to a scratch path and verify its sha256 matches `project.yaml`'s `metadata.buildHash` — catches a stale/non-reproducible `module.wasm`.
-- `make wasm.test`: Host-load `module.wasm` against the relay cabinet ABI (wazero).
-- `make validate`: Validate your local schema changes.
-- `make test`: Run the Python test suite.
-- `make check`: Run all code quality checks (linting, formatting, type-checking).
-- `make golang.quality`: Run the Go quality gate (fmt/vet/lint/vuln) for `module/`.
-- `make manifest-verify` / `make manifest-update`: Verify/regenerate `MANIFEST.sha256`.
-- `make verify-release`: Offline release-readiness check — `project.yaml` schema (incl. `abi:`), `module.wasm` buildHash, ABI exports, `MANIFEST.sha256`, and provenance field status. See [release-artifact.md](docs/contracts/en/release-artifact.md).
-- `make release VERSION=v1.2.3`: Create a new signed release.
-
-For a complete list and description of all available commands, please see the **[Makefile Cheatsheet](docs/en/makefile-cheatsheet.md)**.
+See the [Makefile Cheatsheet](docs/en/makefile-cheatsheet.md) for the full list.
 
 ---
 
 ## Inherited: Schema Compiler & Signing Infrastructure
 
-This template's release/signing pipeline (`tools/`, `mk/infra.mk`,
-`project.yaml` + `project.schema.yaml`) was inherited from the CIC schema
-compiler ecosystem (`schemas/main`). It provides:
-
-- **Governance:** All schemas must conform to a central meta-schema.
-- **Security:** Signing is handled by HashiCorp Vault, ensuring private keys are never exposed.
-- **Reproducibility:** The entire environment is containerized with Docker.
-
-This is the backbone underneath the WASM module template above — most users
-of this template will not need to touch it directly beyond `make release`.
+The release/signing pipeline (`tools/`, `mk/infra.mk`, `project.yaml` +
+`project.schema.yaml`) is inherited from the CIC schema-compiler ecosystem.
+Vault handles signing (private keys never leave Vault); the environment is
+containerized for reproducibility. Most work on this module will not touch it
+beyond `make release`.

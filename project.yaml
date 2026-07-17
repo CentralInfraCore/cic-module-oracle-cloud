@@ -1,15 +1,16 @@
 ---
 metadata:
-  name: wasm-module-template
-  description: WASM guest module template (iSDK boilerplate + release/signing pipeline)
+  name: cic-module-oracle-cloud
+  description: CIC provisioner module for Oracle Cloud Infrastructure (OCI) — a WASM guest driving the OCI REST API through the relay's http/vault host functions
   version: 0.1.0
   license: CC-BY-NC-SA-4.0
-  main_branch: wasm/main
+  main_branch: main
   owner: Gabor Zoltan Sinko
   tags:
-    - template
     - wasm
     - isdk
+    - provisioner
+    - oracle-cloud
   validatedBy:
     name: TBD
     version: TBD
@@ -43,7 +44,7 @@ metadata:
     certificate: "TBD — filled by the release process with the CIC Root CA certificate"
 compiler_settings:
   repo_type: module
-  component_name: wasm-module
+  component_name: cic-module-oracle-cloud
   meta_schemas_dir: ./
   meta_schema_file: md.meta.schema.yaml
   canonical_source_file: schemas/index.yaml
@@ -58,7 +59,7 @@ compiler_settings:
 # module/abi_manifest_test.go — a mismatch fails `make wasm.test`.
 # See docs/contracts/en/wasm-abi.md for the full contract.
 abi:
-  name: wasm-module-template
+  name: cic-module-oracle-cloud
   version: "1.0.0"
   envelopeVersion: 1
   # Functions module/module.wasm must export (cicwasm.go:243-247).

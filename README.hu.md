@@ -1,103 +1,56 @@
-# CIC WASM Modul Sablon
+# cic-module-oracle-cloud
 
-Ez a repository egy sablon **CIC iSDK guest modul** elkészítéséhez: egy kicsi,
-TinyGo-val épített WASM bináris, amelyet a relay host
-(`CIC-Relay/core/cabinet`) [wazero](https://wazero.io)-n keresztül tölt be és
-a `Call` ABI-n keresztül vezérel — beépített, kriptográfiailag aláírt release
+CIC provisioner-modul **Oracle Cloud Infrastructure (OCI)** célra — az első repo
+a `cic-module-<provider>` névtérben. A testvér-modulok (`cic-module-aws`,
+`cic-module-azure`, …) ugyanezt a formát követnék.
+
+A [base-repo](https://github.com/CentralInfraCore/base-repo) `wasm/main`
+template-jéből származtatva: CIC iSDK guest modul — egy kicsi WASM bináris,
+amelyet a relay host (`CIC-Relay/core/cabinet`) [wazero](https://wazero.io)-n át
+tölt be, és a `Call` ABI-n keresztül vezérel, kriptográfiailag aláírt release
 pipeline-nal.
 
-## Áttekintés
+## Mit csinál
 
-- **Modul:** A domain logikát a `module/handlers.go`-ban implementáld az
-  iSDK v1 `Call` ABI szerint (`init` / `process` / `get` / `notify`). A teljes
-  szerződésért és a hibatípus-konvenciókért lásd a
-  **[WASM Modul Szerzői Útmutatót](docs/hu/wasm-module-authoring.md)**.
-- **Build és host-load teszt:** a `make wasm.build` TinyGo-val fordítja a
-  guest modult; a `make wasm.test` betölti a `module/module.wasm`-ot ugyanazzal
-  a wazero runtime-mal, amit a relay cabinet használ, és végigteszteli az ABI-t.
-- **ABI manifest:** a `project.yaml` `abi:` blokkja (exports/operations/
-  envelopeVersion) deklarálja a guest <-> host szerződést; a `make wasm.test`
-  elbukik, ha a `module/module.wasm` nem exportálja mindazt, amit deklarál.
-  Lásd: **[WASM ABI szerződés](docs/contracts/hu/wasm-abi.md)**.
-- **Eredetigazolás (provenance):** minden release aláírja a forrás-spec
-  checksumot (`project.yaml`) ÉS a felépített artifact `buildHash`-ét
-  (`sha256(module/module.wasm)`), így a kiadott modul végponttól végpontig
-  "bizonyítható, aláírt artifact".
+Egy deklarált kívánt OCI-állapotból (szándék) kiindulva az OCI REST API-t hajtja
+a kívánt állapot eléréséhez. Mivel a WASM guest sandboxolt — nincs socket, nincs
+óra, nincs implicit I/O —, **nem** hívja közvetlenül az OCI-t. A hálózatot és a
+titkokat a relay capability-határán kínált **host-függvényeken** át éri el,
+amelyek a relay meglévő Rust gépezete mögé kötnek:
 
-A rendszer architektúrájának és a kiadási folyamat részletes leírásáért,
-kérlek, olvasd el az **[Architektúra Áttekintés](docs/hu/architecture.md)**
-dokumentumot.
+| Igény | Mögötte (CIC-Relay) |
+|---|---|
+| Kimenő HTTP az OCI REST API-hoz | `http-executor` — `reqwest`, `EgressPolicy` host-allowlisttel |
+| Kérés-aláírás / secret lekérés | `vault-adapter` — Vault transit + PKI countersign, secret `SecretString`-ként |
 
----
+Az I/O a host-határon történik, így minden hívás rögzíthető — a modul számítása
+a `(bemenő szándék + host-válaszok)` determinisztikus függvénye marad, ami
+bizonyíthatóvá teszi a CIC ProofTrace modellben.
 
-## Első Lépések
+## Állapot — scaffold
 
-Ez a szekció végigvezet a projekt kezdeti beállításán.
+Ez a template seedje. Ami **még nincs** kész:
 
-### Előfeltételek
+- **A relay-oldali híd.** A relay ma csak egy `git` host-modult kínál a WASM
+  guesteknek (`cmd/relay/git_host_funcs.go`). A `http-executor` és a
+  `vault-adapter` a natív FFI úton él, **nem** wazero host-függvényként. Ezek
+  host-függvénnyé emelése — a `git` mintájára — az engedélyező munka, amitől ez
+  a modul függ.
+- **Az `imports:` szerződés.** Az `abi.schema.yaml` ma csak `exports`-ot ír le.
+  Egy host-függvényeket importáló guesthez az import-felületet fel kell venni a
+  contractba.
+- **Az OCI provisioning-logika** a `module/handlers.go`-ban (vagy Rust
+  megfelelőjében).
 
-- `docker`
-- `docker-compose`
-- `make`
-- `git`
+## Nyitott döntés — Go vagy Rust
 
-### Gyors Kezdés
-
-1.  **Indítsd el a Vault Aláíró Ügynököt:**
-    Egy segédszkript biztosít egy helyi Vault szervert a fejlesztéshez. Ennek egy külön terminálban kell futnia.
-    ```sh
-    # A szkript --help kapcsolója megmutatja az összes opciót
-    ./tools/vault-sign-agent.sh -k <kulcs.pem> -c <cert.crt> --root-ca-file <root.pem>
-    ```
-
-2.  **Inicializáld a Környezetet:**
-    Ezek a parancsok telepítik a függőségeket, megépítik a Docker image-et, elindítják a konténert, és beállítják a Git hook-okat.
-    ```sh
-    make infra.deps
-    make build
-    make up
-    make repo.init
-    ```
-
-3.  **Építsd fel és teszteld a WASM modult:**
-    ```sh
-    make wasm.build
-    make wasm.test
-    ```
-
-A környezeted most már készen áll. A napi fejlesztési feladatokról és a kiadások létrehozásáról szóló részletes útmutatóért, kérlek, olvasd el a **[Fejlesztői Munkafolyamat](docs/hu/workflow.md)** dokumentumot.
+A seed a template Go/TinyGo scaffoldját hordozza, ami zölden tartja a CI-t és
+demonstrálja a `Call` ABI-t. A végleges nyelv nyitott: a host-függvény ABI a
+WASM import-határon van definiálva (`(i32,i32,i32,i32)->i32`, JSON a lineáris
+memóriában), nyelvfüggetlenül — egy Rust guest ugyanazt a host-modult
+importálhatja. Mindkét opció nyitva marad.
 
 ---
 
-## Makefile Parancsok
-
-A `Makefile` egy egyszerű interfészt biztosít az összes gyakori feladathoz.
-
-- `make wasm.build`: A `module/module.wasm` felépítése TinyGo-val és a `buildHash` kiszámítása.
-- `make wasm.rebuild-verify`: A guest modul újraépítése egy ideiglenes helyre, és a sha256 összevetése a `project.yaml` `metadata.buildHash` mezőjével — elkapja, ha a `module.wasm` elavult vagy nem reprodukálható.
-- `make wasm.test`: A `module.wasm` host-load tesztje a relay cabinet ABI ellen (wazero).
-- `make validate`: A helyi séma módosításainak validálása.
-- `make test`: A Python tesztcsomag futtatása.
-- `make check`: Az összes kódminőségi ellenőrzés (linting, formázás, típusellenőrzés) futtatása.
-- `make golang.quality`: Go minőségi kapu (fmt/vet/lint/vuln) a `module/`-ra.
-- `make manifest-verify` / `make manifest-update`: A `MANIFEST.sha256` ellenőrzése/újragenerálása.
-- `make verify-release`: Offline release-készenléti ellenőrzés — `project.yaml` séma (incl. `abi:`), `module.wasm` buildHash, ABI exportok, `MANIFEST.sha256`, és a provenance mezők státusza. Ld. [release-artifact.md](docs/contracts/hu/release-artifact.md).
-- `make release VERSION=v1.2.3`: Új, aláírt kiadás létrehozása.
-
-Az összes elérhető parancs teljes listájáért és leírásáért, kérlek, olvasd el a **[Makefile Súgó](docs/hu/makefile-cheatsheet.md)** dokumentumot.
-
----
-
-## Örökölt: Séma Fordító és Aláíró Infrastruktúra
-
-A sablon release/aláíró pipeline-ja (`tools/`, `mk/infra.mk`,
-`project.yaml` + `project.schema.yaml`) a CIC séma fordító ökoszisztémából
-(`schemas/main`) öröklődött. Ez biztosítja:
-
-- **Irányítás:** Minden sémának meg kell felelnie egy központi meta-sémának.
-- **Biztonság:** Az aláírást a HashiCorp Vault kezeli, biztosítva, hogy a privát kulcsok soha ne kerüljenek ki.
-- **Reprodukálhatóság:** A teljes környezet Docker konténerekben fut.
-
-Ez a fenti WASM modul sablon alatt húzódó alapréteg — a sablon legtöbb
-felhasználójának a `make release`-en túl nincs szüksége vele közvetlenül
-foglalkozni.
+Fejlesztéshez és a make-parancsokhoz lásd az angol [README.md](README.md)-t és a
+[docs/](docs/) alatti szerződéseket.
