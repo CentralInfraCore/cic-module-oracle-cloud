@@ -1,0 +1,74 @@
+---
+metadata:
+  name: wasm-module-template
+  description: WASM guest module template (iSDK boilerplate + release/signing pipeline)
+  version: 0.1.0
+  license: CC-BY-NC-SA-4.0
+  main_branch: wasm/main
+  owner: Gabor Zoltan Sinko
+  tags:
+    - template
+    - wasm
+    - isdk
+  validatedBy:
+    name: TBD
+    version: TBD
+    checksum: TBD
+  # createdBy/issuer_certificate/cicSign/cicSignedCA/checksum/sign below are
+  # template placeholders. A real release replaces them with the author's
+  # Vault-issued certificate, the CIC Root CA issuer certificate, and the
+  # corresponding signatures — produced by `make release` / tools/infra.py
+  # (ReleaseManager._resign_with_build_hash and the Vault signing chain).
+  # The placeholders keep project.yaml schema-valid (project.schema.yaml
+  # treats these as opaque strings) without embedding any real credential.
+  createdBy:
+    name: TBD
+    email: TBD
+    certificate: "TBD — filled by the release process with the author's PEM certificate"
+    issuer_certificate: "TBD — filled by the release process with the CIC Root CA issuer certificate"
+  build_timestamp: 'TBD'
+  validity:
+    from: 'TBD'
+    until: 'TBD'
+  checksum: 'TBD'
+  sign: 'TBD'
+  # buildHash is intentionally empty in the template — `make wasm.build` /
+  # wasm.buildhash (mk/wasm.mk) fills it from sha256(module/module.wasm) in
+  # the build-gap between the prepare and finalize release phases. The
+  # finalization phase (tools/infra.py: _resign_with_build_hash) requires
+  # this to be non-empty and re-signs metadata.sign to cover it.
+  buildHash: cb069c11921ff1f8fe448a825c92683289b5f1a92db94e0cd910c1815ceff58b
+  cicSign: 'TBD'
+  cicSignedCA:
+    certificate: "TBD — filled by the release process with the CIC Root CA certificate"
+compiler_settings:
+  repo_type: module
+  component_name: wasm-module
+  meta_schemas_dir: ./
+  meta_schema_file: md.meta.schema.yaml
+  canonical_source_file: schemas/index.yaml
+  vault_key_name: cic-my-sign-key
+  cic_root_ca_key_name: cic-root-ca-key
+  source_dir: ./
+  vault_cert_mount: cic-my-sign-key
+  vault_cert_secret_name: crt
+  vault_cert_secret_key: bar
+# abi describes the WASM guest <-> relay host contract (KB c689). It is
+# checked against the compiled module/module.wasm exports by
+# module/abi_manifest_test.go — a mismatch fails `make wasm.test`.
+# See docs/contracts/en/wasm-abi.md for the full contract.
+abi:
+  name: wasm-module-template
+  version: "1.0.0"
+  envelopeVersion: 1
+  # Functions module/module.wasm must export (cicwasm.go:243-247).
+  exports:
+    - allocate
+    - deallocate
+    - Call
+  # op-strings dispatched by module/abi.go's Call (KB c689).
+  operations:
+    - init
+    - process
+    - get
+    - notify
