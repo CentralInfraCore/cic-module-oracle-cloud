@@ -10,6 +10,29 @@
     {
       "matchManagers": ["pip-compile"],
       "groupName": "python dependencies"
+    },
+    {
+      "matchManagers": ["gomod"],
+      "groupName": "go dependencies"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions"
+    },
+    {
+      "matchManagers": ["dockerfile", "custom.regex"],
+      "groupName": "build toolchain"
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "Track the pinned TinyGo release (Dockerfile ARG, fetched from GitHub releases) — the WASM build toolchain, which the dockerfile manager cannot see.",
+      "customType": "regex",
+      "fileMatch": ["^Dockerfile$"],
+      "matchStrings": ["ARG TINYGO_VERSION=(?<currentValue>[0-9.]+)"],
+      "depNameTemplate": "tinygo-org/tinygo",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)$"
     }
   ]
 }
