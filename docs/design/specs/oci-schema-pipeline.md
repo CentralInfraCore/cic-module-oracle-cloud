@@ -147,8 +147,24 @@ From the registry + model graph, generate:
      "$SDK/core/vcn.go" "$SDK/core/change_vcn_compartment_details.go"
    ```
 
-2. **Payload schemas** · todo — emit `cic:network:vcn-config` / `…-state` schemas
-   from the field policy + model type graph.
+2. **Payload schemas** · **done** (`tools/oci-extract/schema.go`) —
+   `ResourceSchemas` emits the `<ns>-config` (intent: the settable fields, with
+   `required` = the create model's mandatory fields) and `<ns>-state` (observed:
+   every read-back field) JSON schemas. Each property carries an `x-cic-policy`
+   annotation (`mutable`/`create-only`/`action-managed`/`input-only`/
+   `provider-computed`) and, for action-managed fields, `x-cic-action`; Go types
+   map to JSON-Schema types, with unmapped named types flagged `x-cic-go-type`
+   rather than guessed. Tested on the fixture and **validated on the real pinned
+   SDK**: `cic:network:vcn-config` (13 settable props, `required:[compartmentId]`)
+   and `cic:network:vcn-state` (19 props) are both valid draft-07 schemas
+   (cross-checked with the `jsonschema` the module tooling uses), a sample
+   instance validates, and missing-`required` is rejected. Reproduce:
+
+   ```sh
+   go run ./cmd/oci-extract -schema Vcn -ns cic:network:vcn \
+     "$SDK/core/create_vcn_details.go" "$SDK/core/update_vcn_details.go" \
+     "$SDK/core/vcn.go" "$SDK/core/change_vcn_compartment_details.go"
+   ```
 
 3. **Module types** · todo — request/response structs in the module's language
    (generated Go or Rust), so the module marshals payloads without the SDK
@@ -158,12 +174,23 @@ From the registry + model graph, generate:
    extensions the SDK tags cannot express: `create-only`, `immutable`,
    `requires-replacement`, `action-managed`, `provider-computed`.
 
-## P2.4 — Breaking-change gate
+## P2.4 — Breaking-change gate · done
 
-On an SDK bump: re-extract, diff the schema against the pinned `extracted_schema_hash`,
-and fail the gate on any removed/renamed field or newly-required field until an
-adapter update + review promotes the new version. This turns OCI's minor-version
-breakage from a silent runtime failure into a caught build failure.
+Two halves turn OCI's minor-version breakage from a silent runtime failure into a
+caught, reviewable build signal:
+
+- **Integrity (CI, no network).** `oci-sdk.lock.yaml`'s `extracted_schema_hash` is
+  the sha256 of the committed generated schema (`module/schemas/vcn.json`).
+  `tests/test_oci_sdk_lock.py` recomputes it and fails if they diverge — catching
+  a schema change (including one from an SDK bump via `make oci.generate`) that
+  was not re-pinned and reviewed.
+- **Semantic classification.** `oci-extract -diff <old.json> <new.json>`
+  (`tools/oci-extract/diff.go`) classifies the change as **breaking** (a config
+  field removed, a field that became required, a new required field, a type
+  change) or **compatible** (a new optional field, a policy change), and exits 3
+  if any breaking change is present. On an SDK bump the workflow is: `make
+  oci.generate` → `oci-extract -diff` the old vs new schema → on breaking changes,
+  update the adapter + review before re-pinning `extracted_schema_hash`.
 
 ## Split, don't monolith
 

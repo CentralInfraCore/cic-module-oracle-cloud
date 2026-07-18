@@ -137,11 +137,15 @@ overwrite.
 - **No `type: any` / `TBD`.** Every field is concretely typed before the payload
   schema is an ABI-bearing contract.
 
-## `abi.schema.yaml` extension (P0.3)
+## `abi.schema.yaml` extension (P0.3) · done
 
-`project.yaml`'s `abi:` block declares only `exports` today. Add an `imports:`
-surface naming the host functions the module requires, so `abi_manifest_test`
-(and the host) can check the module against its declared capability boundary:
+`abi.schema.yaml` now has an optional `imports` surface and `project.yaml`
+declares `abi.imports` (`cic-flow`: `sign`/`actuate`, provisional). `describe()`
+reports it, so the host can read the module's required sign+send surface. It is a
+**declaration** — the names are settled with the relay when the host surface
+lands (R1/R2), and nothing is imported at the wasm level yet (WASI-off; the
+trust-flow is native-FFI today), so it is not checked against the binary the way
+`exports` is.
 
 ```yaml
 abi:
