@@ -22,7 +22,7 @@ downstream is stable until these are.
 
 | ID | Piece | Where | Status | Spec |
 |----|-------|-------|--------|------|
-| P0.1 | `cic:provider` ABI: `validate/observe/plan/execute/poll/invoke/destroy` + envelope | this repo | spec | [provider-abi](specs/provider-abi.md) |
+| P0.1 | `cic:provider` ABI: `validate/observe/plan/execute/poll/invoke/destroy` + envelope | this repo | spec — **blocked** by [#2](https://github.com/CentralInfraCore/cic-module-oracle-cloud/issues/2) (wasm rebuild not reproducible local↔CI; a rebuild is required) | [provider-abi](specs/provider-abi.md) |
 | P0.2 | Capability manifest schema | this repo | **done** | [capability-manifest](specs/capability-manifest.md) |
 | P0.3 | Extend `abi.schema.yaml` with an `imports:` surface | this repo | todo | [provider-abi](specs/provider-abi.md) |
 | P0.4 | Intent/state correspondence + `effective_config` model | this repo | spec | [state-model](specs/state-model.md) |
@@ -57,7 +57,7 @@ code and CIC contracts; nothing Go ships at runtime.
 
 | ID | Piece | Where | Status | Spec |
 |----|-------|-------|--------|------|
-| P2.1 | Pin the OCI Go SDK exactly + record source hash | this repo | todo | [oci-schema-pipeline](specs/oci-schema-pipeline.md) |
+| P2.1 | Pin the OCI Go SDK exactly + record source hash | this repo | **done** (`oci-sdk.lock.yaml`) | [oci-schema-pipeline](specs/oci-schema-pipeline.md) |
 | P2.2 | `go/ast` extractor → operation registry (method, path, req/resp models) | this repo | todo | [oci-schema-pipeline](specs/oci-schema-pipeline.md) |
 | P2.3 | Model → CIC provider contract + module type generator | this repo | todo | [oci-schema-pipeline](specs/oci-schema-pipeline.md) |
 | P2.4 | Schema diff / breaking-change gate on SDK bump | this repo | todo | [oci-schema-pipeline](specs/oci-schema-pipeline.md) |

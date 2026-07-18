@@ -1,0 +1,28 @@
+# oci-sdk.lock.yaml — the pinned OCI Go SDK, used as the build-time schema source
+# (roadmap P2.1). This is NOT a runtime dependency: the SDK is read at build time
+# by the extractor (P2.2) to produce the operation registry and models; nothing
+# Go ships in the WASM module. Pinned exactly because OCI ships breaking changes
+# in minor versions — a bump is gated on a schema diff (P2.4).
+# See docs/design/specs/oci-schema-pipeline.md.
+#
+# Provenance is tamper-evident: the VCS commit comes from the Go module proxy
+# (proxy.golang.org), and the module hashes are the go.sum h1 values recorded in
+# the Go checksum transparency log (sum.golang.org).
+---
+provider_dependency:
+  name: github.com/oracle/oci-go-sdk/v65
+  version: v65.121.0
+  published: "2026-07-14T15:51:26Z"
+
+  vcs:
+    url: https://github.com/oracle/oci-go-sdk
+    ref: refs/tags/v65.121.0
+    commit: c46dec5c0e366f206199c1b44a4e090ee1c9af99
+
+  # go.sum-style module hashes, verified by sum.golang.org.
+  module_hash: "h1:1J+5ARgrodrx8kzFy/hxznaoUzz43jr0EestCzEaOHw="
+  gomod_hash: "h1:Pzy+BpgkDesvGZXEHgslwhIYobHCPHg6wRta1mWnlqQ="
+
+  # sha256 of the normalized operation registry the extractor produces from this
+  # exact source. Filled by P2.2; a bump that changes it triggers the P2.4 gate.
+  extracted_schema_hash: null

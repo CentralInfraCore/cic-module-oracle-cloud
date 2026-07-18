@@ -51,19 +51,18 @@ type CreateVcnResponse struct {
 | `name` | actual HTTP parameter name |
 | `presentIn:"body\|header"` | where a response field is read |
 
-## P2.1 — Pin exactly
+## P2.1 — Pin exactly · done
 
 OCI ships **breaking changes in minor versions** (only `common` breaks bump
-major). So pin precisely and record provenance; never `@latest`:
+major). So pin precisely and record provenance; never `@latest`.
 
-```yaml
-provider_dependency:
-  name: oracle-oci-go-sdk
-  version: v65.121.0
-  source_commit: c46dec5...
-  source_archive_sha256: ...     # Oracle publishes checksums
-  extracted_schema_hash: ...
-```
+Done: [`oci-sdk.lock.yaml`](../../../oci-sdk.lock.yaml) pins
+`github.com/oracle/oci-go-sdk/v65 v65.121.0` at commit
+`c46dec5c0e366f206199c1b44a4e090ee1c9af99`, with the go.sum `h1:` module and
+`go.mod` hashes recorded from the Go checksum transparency log (sum.golang.org) —
+tamper-evident provenance. `extracted_schema_hash` is `null` until the extractor
+(P2.2) fills it. `tests/test_oci_sdk_lock.py` checks the lock's shape and
+internal consistency (version ↔ VCS ref, full commit sha, h1 hash form).
 
 ## P2.2 — Extractor → operation registry
 
