@@ -40,67 +40,76 @@ func TestHostLoadEmptyOp(t *testing.T) {
 	}
 }
 
-// TestHostLoadEmptyPayload verifies the empty-payload (data="") path:
-// handlers.go's Get only validates data when len(data) > 0, so an empty
-// payload must succeed like "{}".
+// TestHostLoadEmptyPayload verifies the empty-payload (data="") path: describe
+// ignores its data argument (provider.go: Describe), so an empty payload must
+// still return an "ok" providerResult with the module manifest.
 func TestHostLoadEmptyPayload(t *testing.T) {
 	ctx, instance, callFn, allocateFn, deallocateFn := loadModule(t)
 
-	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "get", "{}", "")
+	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "describe", "{}", "")
 
 	if string(env.Error) != "null" {
-		t.Fatalf("Call(\"get\", data=\"\"): error = %s, want null", env.Error)
+		t.Fatalf("Call(\"describe\", data=\"\"): error = %s, want null", env.Error)
 	}
-	var status struct {
+	var res struct {
 		Status string `json:"status"`
 	}
-	if err := json.Unmarshal(env.Data, &status); err != nil {
-		t.Fatalf("Call(\"get\", data=\"\"): data is not the expected shape: %v (raw: %s)", err, env.Data)
+	if err := json.Unmarshal(env.Data, &res); err != nil {
+		t.Fatalf("Call(\"describe\", data=\"\"): data is not a providerResult: %v (raw: %s)", err, env.Data)
 	}
-	if status.Status != "ok" {
-		t.Errorf("Call(\"get\", data=\"\"): data.status = %q, want %q", status.Status, "ok")
+	if res.Status != "ok" {
+		t.Errorf("Call(\"describe\", data=\"\"): data.status = %q, want %q", res.Status, "ok")
 	}
 }
 
-// TestHostLoadEmptyPayloadNullSuccess covers the empty-payload (data="")
-// variant of the null-success contract for init/process/notify, alongside
-// TestHostLoadNullSuccess's data="{}" coverage.
-func TestHostLoadEmptyPayloadNullSuccess(t *testing.T) {
+// TestHostLoadEmptyPayloadProviderOps covers the empty-payload (data="") variant
+// across the provider op set: every op returns a null transport error and a
+// data payload that decodes as a providerResult (provider.go).
+func TestHostLoadEmptyPayloadProviderOps(t *testing.T) {
 	ctx, instance, callFn, allocateFn, deallocateFn := loadModule(t)
 
-	for _, op := range []string{"init", "process", "notify"} {
+	for _, op := range []string{"describe", "validate", "plan", "observe", "execute"} {
 		t.Run(op, func(t *testing.T) {
 			env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, op, "", "")
-			if string(env.Data) != "null" {
-				t.Errorf("Call(%q, data=\"\"): data = %s, want null", op, env.Data)
-			}
 			if string(env.Error) != "null" {
-				t.Errorf("Call(%q, data=\"\"): error = %s, want null", op, env.Error)
+				t.Errorf("Call(%q, data=\"\"): transport error = %s, want null", op, env.Error)
+			}
+			var res struct {
+				Status string `json:"status"`
+			}
+			if err := json.Unmarshal(env.Data, &res); err != nil {
+				t.Fatalf("Call(%q, data=\"\"): data is not a providerResult: %v (raw: %s)", op, err, env.Data)
+			}
+			if res.Status != "ok" && res.Status != "error" {
+				t.Errorf("Call(%q, data=\"\"): data.status = %q, want ok|error", op, res.Status)
 			}
 		})
 	}
 }
 
-// TestHostLoadOversizedPayload verifies a large (~256KiB) invalid-JSON
-// payload round-trips through allocate/Call/deallocate without crashing the
-// instance, and still produces the expected CodeInput error envelope
-// (handlers.go: Get rejects non-JSON data).
+// TestHostLoadOversizedPayload verifies a large (~256KiB) invalid-JSON payload
+// round-trips through allocate/Call/deallocate without crashing the instance.
+// validate rejects the non-JSON request as a DOMAIN error (provider.go:
+// Validate), so the transport call still succeeds (error null) and data is an
+// "error" providerResult.
 func TestHostLoadOversizedPayload(t *testing.T) {
 	ctx, instance, callFn, allocateFn, deallocateFn := loadModule(t)
 
 	big := strings.Repeat("x", 256*1024) // not valid JSON
 
-	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "get", "{}", big)
+	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "validate", "{}", big)
 
-	if string(env.Data) != "null" {
-		t.Errorf("Call(\"get\", data=<256KiB>): data = %s, want null", env.Data)
+	if string(env.Error) != "null" {
+		t.Fatalf("Call(\"validate\", data=<256KiB>): transport error = %s, want null", env.Error)
 	}
-	var gerr envelopeError
-	if err := json.Unmarshal(env.Error, &gerr); err != nil {
-		t.Fatalf("Call(\"get\", data=<256KiB>): error is not a valid error envelope: %v (raw: %s)", err, env.Error)
+	var res struct {
+		Status string `json:"status"`
 	}
-	if gerr.Code != "INPUT" {
-		t.Errorf("Call(\"get\", data=<256KiB>): error.code = %q, want %q", gerr.Code, "INPUT")
+	if err := json.Unmarshal(env.Data, &res); err != nil {
+		t.Fatalf("Call(\"validate\", data=<256KiB>): data is not a providerResult: %v (raw: %s)", err, env.Data)
+	}
+	if res.Status != "error" {
+		t.Errorf("Call(\"validate\", data=<256KiB>): data.status = %q, want %q", res.Status, "error")
 	}
 }
 

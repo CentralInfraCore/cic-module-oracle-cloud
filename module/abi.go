@@ -32,15 +32,23 @@ func Call(opPtr, opLen, authPtr, authLen, dataPtr, dataLen uint32) uint64 {
 
 	var out []byte
 	var derr error
-	switch op { // op-dispatch — host: cicwasm.go:267-281
-	case "init":
-		out, derr = Init(auth, data)
-	case "process":
-		out, derr = Process(auth, data)
-	case "get":
-		out, derr = Get(auth, data)
-	case "notify":
-		out, derr = Notify(auth, data)
+	switch op { // cic:provider ABI dispatch (docs/design/specs/provider-abi.md)
+	case "describe":
+		out, derr = Describe(auth, data)
+	case "validate":
+		out, derr = Validate(auth, data)
+	case "observe":
+		out, derr = Observe(auth, data)
+	case "plan":
+		out, derr = Plan(auth, data)
+	case "execute":
+		out, derr = Execute(auth, data)
+	case "poll":
+		out, derr = Poll(auth, data)
+	case "invoke":
+		out, derr = Invoke(auth, data)
+	case "destroy":
+		out, derr = Destroy(auth, data)
 	default:
 		return pack(marshalErr(CodeInput, "unknown op: "+op))
 	}

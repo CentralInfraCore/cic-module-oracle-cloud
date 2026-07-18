@@ -129,25 +129,36 @@ func callOp(t *testing.T, ctx context.Context, instance api.Module, callFn, allo
 	return env
 }
 
-// TestHostLoad verifies the ABI exports and the "get" round trip: error must
-// be null and data must report status "ok" (handlers.go: Get).
+// TestHostLoad verifies the ABI exports and the "describe" round trip: the
+// transport error must be null and data must be an "ok" providerResult carrying
+// the module manifest (provider.go: Describe).
 func TestHostLoad(t *testing.T) {
 	ctx, instance, callFn, allocateFn, deallocateFn := loadModule(t)
 
-	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "get", "{}", "{}")
+	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "describe", "{}", "{}")
 
 	if string(env.Error) != "null" {
-		t.Fatalf("Call(\"get\"): error = %s, want null", env.Error)
+		t.Fatalf("Call(\"describe\"): error = %s, want null", env.Error)
 	}
 
-	var status struct {
+	var res struct {
 		Status string `json:"status"`
+		Result struct {
+			ABIVersion string   `json:"abi_version"`
+			Operations []string `json:"operations"`
+		} `json:"result"`
 	}
-	if err := json.Unmarshal(env.Data, &status); err != nil {
-		t.Fatalf("Call(\"get\"): data is not the expected shape: %v (raw: %s)", err, env.Data)
+	if err := json.Unmarshal(env.Data, &res); err != nil {
+		t.Fatalf("Call(\"describe\"): data is not the expected shape: %v (raw: %s)", err, env.Data)
 	}
-	if status.Status != "ok" {
-		t.Errorf("Call(\"get\"): data.status = %q, want %q", status.Status, "ok")
+	if res.Status != "ok" {
+		t.Errorf("Call(\"describe\"): data.status = %q, want %q", res.Status, "ok")
+	}
+	if res.Result.ABIVersion != "cic:provider@0.1.0" {
+		t.Errorf("Call(\"describe\"): abi_version = %q, want cic:provider@0.1.0", res.Result.ABIVersion)
+	}
+	if len(res.Result.Operations) != 8 {
+		t.Errorf("Call(\"describe\"): got %d operations, want 8", len(res.Result.Operations))
 	}
 }
 
@@ -170,40 +181,60 @@ func TestHostLoadUnknownOp(t *testing.T) {
 	}
 }
 
-// TestHostLoadHandlerError verifies that a handler returning a *GuestError
-// (handlers.go: Get, on invalid JSON data) surfaces with its own code
-// rather than the CodeRuntime default.
-func TestHostLoadHandlerError(t *testing.T) {
+// TestHostLoadDomainError verifies the domain-error path through wasm: a
+// sign+send op (execute) that cannot actuate returns a SUCCESSFUL transport call
+// (error null) whose data is an "error" providerResult carrying the typed
+// scaffold provider-error (provider.go: hostSignSendUnavailable). Domain errors
+// live in data, not the transport error slot.
+func TestHostLoadDomainError(t *testing.T) {
 	ctx, instance, callFn, allocateFn, deallocateFn := loadModule(t)
 
-	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "get", "{}", "not-json")
+	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "execute", "{}", "{}")
 
-	if string(env.Data) != "null" {
-		t.Errorf("Call(\"get\", data=not-json): data = %s, want null", env.Data)
+	if string(env.Error) != "null" {
+		t.Fatalf("Call(\"execute\"): transport error = %s, want null", env.Error)
 	}
-	var gerr envelopeError
-	if err := json.Unmarshal(env.Error, &gerr); err != nil {
-		t.Fatalf("Call(\"get\", data=not-json): error is not a valid error envelope: %v (raw: %s)", err, env.Error)
+	var res struct {
+		Status string `json:"status"`
+		Error  struct {
+			Class        string `json:"class"`
+			ProviderCode string `json:"provider_code"`
+		} `json:"error"`
 	}
-	if gerr.Code != "INPUT" {
-		t.Errorf("Call(\"get\", data=not-json): error.code = %q, want %q", gerr.Code, "INPUT")
+	if err := json.Unmarshal(env.Data, &res); err != nil {
+		t.Fatalf("Call(\"execute\"): data is not a providerResult: %v (raw: %s)", err, env.Data)
+	}
+	if res.Status != "error" {
+		t.Errorf("Call(\"execute\"): data.status = %q, want %q", res.Status, "error")
+	}
+	if res.Error.ProviderCode != "HOST_SIGN_SEND_UNAVAILABLE" {
+		t.Errorf("Call(\"execute\"): provider_code = %q, want HOST_SIGN_SEND_UNAVAILABLE", res.Error.ProviderCode)
 	}
 }
 
-// TestHostLoadNullSuccess verifies the null-success contract (KB c689) for
-// init/process/notify: the template stubs (handlers.go) return (nil, nil),
-// which must surface as {"data":null,"error":null}.
-func TestHostLoadNullSuccess(t *testing.T) {
+// TestHostLoadProviderOps smoke-tests the whole cic:provider op set through
+// wasm: every op returns a null transport error and a data payload that decodes
+// as a providerResult with status ok|error (provider.go).
+func TestHostLoadProviderOps(t *testing.T) {
 	ctx, instance, callFn, allocateFn, deallocateFn := loadModule(t)
 
-	for _, op := range []string{"init", "process", "notify"} {
+	for _, op := range []string{
+		"describe", "validate", "observe", "plan",
+		"execute", "poll", "invoke", "destroy",
+	} {
 		t.Run(op, func(t *testing.T) {
 			env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, op, "{}", "{}")
-			if string(env.Data) != "null" {
-				t.Errorf("Call(%q): data = %s, want null", op, env.Data)
-			}
 			if string(env.Error) != "null" {
-				t.Errorf("Call(%q): error = %s, want null", op, env.Error)
+				t.Errorf("Call(%q): transport error = %s, want null", op, env.Error)
+			}
+			var res struct {
+				Status string `json:"status"`
+			}
+			if err := json.Unmarshal(env.Data, &res); err != nil {
+				t.Fatalf("Call(%q): data is not a providerResult: %v (raw: %s)", op, err, env.Data)
+			}
+			if res.Status != "ok" && res.Status != "error" {
+				t.Errorf("Call(%q): data.status = %q, want ok|error", op, res.Status)
 			}
 		})
 	}
