@@ -129,13 +129,22 @@ func hostSignSendUnavailable(op string) *providerError {
 // ---- describe (implemented) ----
 
 type moduleManifest struct {
-	Name                 string   `json:"name"`
-	Version              string   `json:"version"`
-	ABIVersion           string   `json:"abi_version"`
-	Provider             string   `json:"provider"`
-	ResourceKinds        []string `json:"resource_kinds"`
-	Operations           []string `json:"operations"`
-	RequiredCapabilities capReq   `json:"required_capabilities"`
+	Name                 string      `json:"name"`
+	Version              string      `json:"version"`
+	ABIVersion           string      `json:"abi_version"`
+	Provider             string      `json:"provider"`
+	ResourceKinds        []string    `json:"resource_kinds"`
+	Operations           []string    `json:"operations"`
+	Imports              []importReq `json:"imports"`
+	RequiredCapabilities capReq      `json:"required_capabilities"`
+}
+
+// importReq is a host-function requirement the module declares for its sign+send
+// ops (P0.3). Declaration only — names are provisional until settled with the
+// relay (relay-requirements.md R1/R2). Mirrors project.yaml abi.imports.
+type importReq struct {
+	Module    string   `json:"module"`
+	Functions []string `json:"functions"`
 }
 
 // capReq is a summary of project.yaml's capability_manifest reach, so a host can
@@ -157,6 +166,11 @@ func Describe(auth, data []byte) ([]byte, error) {
 		// added as their payload schemas are generated (P2.3).
 		ResourceKinds: []string{"cic:network:vcn"},
 		Operations:    providerOps,
+		// The sign+send host surface this module requires (project.yaml
+		// abi.imports). Provisional until settled with the relay (R1/R2).
+		Imports: []importReq{
+			{Module: "cic-flow", Functions: []string{"sign", "actuate"}},
+		},
 		RequiredCapabilities: capReq{
 			EgressHosts: []string{"*.oraclecloud.com"},
 			SecretOps:   []string{"oci/*:sign"},

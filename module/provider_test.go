@@ -48,6 +48,14 @@ func TestDescribeManifest(t *testing.T) {
 			break
 		}
 	}
+	// The declared import surface (P0.3) must be reported, so a host can read the
+	// module's sign+send requirement from describe().
+	if len(m.Imports) != 1 || m.Imports[0].Module != "cic-flow" {
+		t.Fatalf("imports = %+v, want [{cic-flow [sign actuate]}]", m.Imports)
+	}
+	if len(m.Imports[0].Functions) != 2 {
+		t.Errorf("imports[0].functions = %v, want [sign actuate]", m.Imports[0].Functions)
+	}
 }
 
 // validateVcn builds a validation-request for kind cic:network:vcn with the given

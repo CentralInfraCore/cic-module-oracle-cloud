@@ -36,6 +36,31 @@
         "type": "string",
         "minLength": 1
       }
+    },
+    "imports": {
+      "type": "array",
+      "description": "Host functions the module REQUIRES from the relay -- its sign+send capability boundary. Declaration only: the module states what it needs; it does not define the host side. Not checked against the binary (WASI-off; the trust-flow is native-FFI today, not a wasm import), so this is the module's half of the contract, settled with the relay when the host surface lands (relay-requirements.md R1/R2). Mirrors capability_manifest reach.",
+      "items": {
+        "type": "object",
+        "required": ["module", "functions"],
+        "additionalProperties": false,
+        "properties": {
+          "module": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The host module/namespace providing the functions (e.g. cic-flow). Provisional until settled with the relay."
+          },
+          "functions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "The required function names within that host module."
+          }
+        }
+      }
     }
   }
 }
