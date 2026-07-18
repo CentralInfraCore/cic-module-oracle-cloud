@@ -10,7 +10,7 @@
 
 .PHONY: golang.all golang.help golang.fmt golang.fmt-check golang.lint golang.vet golang.quality \
 	golang.test golang.coverage golang.coverage-profile golang.coverage-html golang.coverage-threshold \
-	golang.vuln golang.deps golang.clean golang.tdd
+	golang.vuln golang.deps golang.clean golang.tdd oci.extract.test
 
 # Default to showing help
 golang.all: golang.help
@@ -154,3 +154,12 @@ golang.tdd: ## TDD loop with reflex
 		command -v reflex >/dev/null 2>&1 || go install github.com/cespare/reflex@latest; \
 		reflex -r "(\.go|go\.mod|go\.sum)$$" -- sh -c "GOFLAGS=-mod=readonly\ -trimpath go test -race -count=1 ./..." \
 	)
+
+# ---- OCI schema extractor (roadmap P2.2) ----
+# A separate, stdlib-only Go module (tools/oci-extract) that reads the pinned
+# OCI Go SDK source with go/ast and emits the model registry. Its own module, so
+# it is tested here rather than under GO_MODULE_DIR (the wasm guest).
+oci.extract.test: ## Vet + test the OCI schema extractor (tools/oci-extract, P2.2)
+	@echo "--- OCI schema extractor: go vet + test ---"
+	@docker compose exec -T builder sh -eu -o pipefail -c \
+		'cd /app/tools/oci-extract && go vet ./... && go test ./...'
