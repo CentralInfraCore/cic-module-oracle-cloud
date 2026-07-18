@@ -174,12 +174,23 @@ From the registry + model graph, generate:
    extensions the SDK tags cannot express: `create-only`, `immutable`,
    `requires-replacement`, `action-managed`, `provider-computed`.
 
-## P2.4 — Breaking-change gate
+## P2.4 — Breaking-change gate · done
 
-On an SDK bump: re-extract, diff the schema against the pinned `extracted_schema_hash`,
-and fail the gate on any removed/renamed field or newly-required field until an
-adapter update + review promotes the new version. This turns OCI's minor-version
-breakage from a silent runtime failure into a caught build failure.
+Two halves turn OCI's minor-version breakage from a silent runtime failure into a
+caught, reviewable build signal:
+
+- **Integrity (CI, no network).** `oci-sdk.lock.yaml`'s `extracted_schema_hash` is
+  the sha256 of the committed generated schema (`module/schemas/vcn.json`).
+  `tests/test_oci_sdk_lock.py` recomputes it and fails if they diverge — catching
+  a schema change (including one from an SDK bump via `make oci.generate`) that
+  was not re-pinned and reviewed.
+- **Semantic classification.** `oci-extract -diff <old.json> <new.json>`
+  (`tools/oci-extract/diff.go`) classifies the change as **breaking** (a config
+  field removed, a field that became required, a new required field, a type
+  change) or **compatible** (a new optional field, a policy change), and exits 3
+  if any breaking change is present. On an SDK bump the workflow is: `make
+  oci.generate` → `oci-extract -diff` the old vs new schema → on breaking changes,
+  update the adapter + review before re-pinning `extracted_schema_hash`.
 
 ## Split, don't monolith
 

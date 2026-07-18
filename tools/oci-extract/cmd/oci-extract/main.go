@@ -4,6 +4,7 @@
 //	go run ./cmd/oci-extract <file.go> [<file.go> ...]
 //	go run ./cmd/oci-extract -policy <Resource> <model-file.go> ...
 //	go run ./cmd/oci-extract -schema <Resource> [-ns <id-stem>] <model-file.go> ...
+//	go run ./cmd/oci-extract -diff <old.json> <new.json>   # P2.4, exit 3 if breaking
 //
 // Default: a *_client.go file yields operations (method + HTTP verb/path +
 // request/response types); any other file yields models (structs → fields),
@@ -33,10 +34,35 @@ func main() {
 	schemaRes := flag.String("schema", "", "emit the {config, state} CIC payload schemas for <Resource> from the given model files")
 	ns := flag.String("ns", "", "CIC schema id stem for -schema, e.g. cic:network:vcn (default: lower-cased <Resource>)")
 	version := flag.String("schema-version", "v0.1.0", "x-cic-schema-version for -schema output")
+	diff := flag.Bool("diff", false, "classify the change between two schema bundles: -diff <old.json> <new.json> (P2.4). Exit 3 if breaking.")
 	flag.Parse()
 	files := flag.Args()
+
+	if *diff {
+		if len(files) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: oci-extract -diff <old.json> <new.json>")
+			os.Exit(2)
+		}
+		oldB, err1 := os.ReadFile(files[0])
+		newB, err2 := os.ReadFile(files[1])
+		if err1 != nil || err2 != nil {
+			fmt.Fprintf(os.Stderr, "error reading bundles: %v %v\n", err1, err2)
+			os.Exit(1)
+		}
+		d, err := ociextract.DiffConfigSchemas(oldB, newB)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		emit(d)
+		if len(d.Breaking) > 0 {
+			os.Exit(3) // breaking changes present — the gate fails
+		}
+		return
+	}
+
 	if len(files) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: oci-extract [-policy <Resource> | -schema <Resource> [-ns <id-stem>]] <file.go> ...")
+		fmt.Fprintln(os.Stderr, "usage: oci-extract [-policy <Resource> | -schema <Resource> [-ns <id-stem>] | -diff <old> <new>] <file.go> ...")
 		os.Exit(2)
 	}
 
