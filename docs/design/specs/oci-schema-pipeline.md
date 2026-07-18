@@ -64,22 +64,42 @@ tamper-evident provenance. `extracted_schema_hash` is `null` until the extractor
 (P2.2) fills it. `tests/test_oci_sdk_lock.py` checks the lock's shape and
 internal consistency (version ↔ VCS ref, full commit sha, h1 hash form).
 
-## P2.2 — Extractor → operation registry · in progress
+## P2.2 — Extractor → operation registry · done
 
 A Go tool (`go/ast`, comments kept) over the pinned source produces a
 machine-readable registry joining the three file kinds.
 
-**Built:** `tools/oci-extract` (a separate, stdlib-only Go module) extracts
-**models** — each struct's fields with their `json` name, `mandatory` flag,
-`contributesTo` / `presentIn` placement, and `name` HTTP parameter — from
-request/response/details files, keeping doc comments. Tested against a VCN
-fixture (`tools/oci-extract/testdata/vcn.go`); run via `make oci.extract.test`,
-enforced in CI. The CLI (`go run ./cmd/oci-extract <file.go>`) emits the registry
-as canonical JSON.
+**Models** (`tools/oci-extract/extract.go`): each struct's fields with their
+`json` name, `mandatory` flag, `contributesTo` / `presentIn` placement, and
+`name` HTTP parameter — from request/response/details files, keeping doc
+comments.
 
-**Pending:** joining the client method's HTTP method + path (from `*_client.go`)
-to complete the per-operation entry below, and running against the real pinned
-SDK rather than the fixture.
+**Operations** (`tools/oci-extract/client.go`): each public client method joined
+with its HTTP verb + path and request/response types. The method+path come from
+the private method's `request.HTTPRequest(http.Method*, "<path>", …)` call; the
+public↔private link is the SDK's naming convention (`CreateVcn` ↔ `createVcn`).
+Helper methods without a `*Request`/`*Response` signature and an HTTPRequest call
+are skipped.
+
+The CLI routes `*_client.go` to the operation extractor and any other file to the
+model extractor, emitting a single `{operations, models}` registry as canonical
+JSON. `make oci.extract.test` (go vet + go test on a VCN client + model fixture)
+is enforced in CI — deterministic, no network.
+
+**Validated against the real pinned SDK** (v65.121.0, not just the fixture):
+`core_virtualnetwork_client.go` yields **271 operations, zero with a missing
+method/path** (verbs: POST 104, GET 103, PUT 33, DELETE 29, PATCH 2), e.g.
+`CreateVcn → POST /vcns`. Reproduce:
+
+```sh
+go mod download github.com/oracle/oci-go-sdk/v65@v65.121.0   # into GOMODCACHE
+go run ./cmd/oci-extract "$SDK/core/core_virtualnetwork_client.go"
+```
+
+`oci-sdk.lock.yaml`'s `extracted_schema_hash` stays `null` until the full,
+per-service extraction file set is pinned (the input to the P2.4 breaking-change
+gate) — filling it from a single client file would not be the artifact that gate
+diffs.
 
 The target registry entry:
 

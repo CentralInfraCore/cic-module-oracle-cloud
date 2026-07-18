@@ -58,7 +58,7 @@ code and CIC contracts; nothing Go ships at runtime.
 | ID | Piece | Where | Status | Spec |
 |----|-------|-------|--------|------|
 | P2.1 | Pin the OCI Go SDK exactly + record source hash | this repo | **done** (`oci-sdk.lock.yaml`) | [oci-schema-pipeline](specs/oci-schema-pipeline.md) |
-| P2.2 | `go/ast` extractor → operation registry (method, path, req/resp models) | this repo | **in progress** — model/tag extraction done (`tools/oci-extract`); client method+path join pending | [oci-schema-pipeline](specs/oci-schema-pipeline.md) |
+| P2.2 | `go/ast` extractor → operation registry (method, path, req/resp models) | this repo | **done** — models + client method/path join (`tools/oci-extract`); validated on the real pinned SDK (271 VCN ops, 0 missing method/path) | [oci-schema-pipeline](specs/oci-schema-pipeline.md) |
 | P2.3 | Model → CIC provider contract + module type generator | this repo | todo | [oci-schema-pipeline](specs/oci-schema-pipeline.md) |
 | P2.4 | Schema diff / breaking-change gate on SDK bump | this repo | todo | [oci-schema-pipeline](specs/oci-schema-pipeline.md) |
 
