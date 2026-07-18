@@ -15,7 +15,7 @@ exists in `CIC-Relay` · `done` — landed in the relay.
 
 ---
 
-## R1 — Expose the trust-flow to WASM guests · needed
+## R1 — Expose the trust-flow to WASM guests · raised ([CIC_Relay#87](https://github.com/CentralInfraCore/CIC_Relay/issues/87))
 
 **Need.** A sandboxed provider module must be able to drive a signed,
 egress-policed HTTP actuation. Today it cannot.
@@ -31,7 +31,7 @@ crate — it exposes a whole custody flow.
 
 Maps to roadmap **P1.1 / P1.4**.
 
-## R2 — OCI request signing (RSA-SHA256 canonical), not Bearer · needed
+## R2 — OCI request signing (RSA-SHA256 canonical), not Bearer · raised ([CIC_Relay#88](https://github.com/CentralInfraCore/CIC_Relay/issues/88))
 
 **Need.** OCI authenticates each request with RSA-SHA256 over canonical headers
 (draft-cavage HTTP Signatures). The relay's actuation applies a **Bearer**
