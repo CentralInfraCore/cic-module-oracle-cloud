@@ -162,9 +162,9 @@ func Describe(auth, data []byte) ([]byte, error) {
 		Version:    "1.0.0",
 		ABIVersion: abiVersion,
 		Provider:   providerName,
-		// The first resource kind targeted (roadmap: core/network). More are
-		// added as their payload schemas are generated (P2.3).
-		ResourceKinds: []string{"cic:network:vcn"},
+		// Derived from the embedded generated contracts, so describe() always
+		// reports exactly the kinds the module can validate/plan.
+		ResourceKinds: supportedKinds(),
 		Operations:    providerOps,
 		// The sign+send host surface this module requires (project.yaml
 		// abi.imports). Provisional until settled with the relay (R1/R2).
@@ -177,6 +177,18 @@ func Describe(auth, data []byte) ([]byte, error) {
 		},
 	}
 	return okResult(m)
+}
+
+// supportedKinds is the sorted list of resource kinds the module has an embedded
+// contract for (contracts.go).
+func supportedKinds() []string {
+	c := resourceContracts()
+	kinds := make([]string, 0, len(c))
+	for k := range c {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	return kinds
 }
 
 // ---- validate (envelope-level implemented; schema-conformance scaffold) ----

@@ -130,6 +130,61 @@ func TestValidateRejectsTypeMismatch(t *testing.T) {
 	}
 }
 
+// TestValidateSubnet proves the pipeline generalizes past VCN: a second embedded
+// contract (cic:network:subnet, two required fields) validates the same way.
+func TestValidateSubnet(t *testing.T) {
+	run := func(data string) validationResult {
+		req := validationRequest{
+			Kind:   "cic:network:subnet",
+			Intent: schemaPayload{SchemaID: "cic:network:subnet-config", SchemaVersion: "v0.1.0", SchemaHash: "abc123", Encoding: encCanonicalJSON, Data: json.RawMessage(data)},
+		}
+		raw, _ := json.Marshal(req)
+		out, err := Validate(nil, raw)
+		if err != nil {
+			t.Fatalf("Validate transport error: %v", err)
+		}
+		var vr validationResult
+		json.Unmarshal(decodeResult(t, out).Result, &vr)
+		return vr
+	}
+
+	if vr := run(`{"compartmentId":"ocid1..","vcnId":"ocid1.vcn..","displayName":"web"}`); !vr.Admissible {
+		t.Errorf("conformant subnet intent: admissible=false, want true (errors: %+v)", vr.Errors)
+	}
+	// vcnId is the second required field — omitting it must fail.
+	if vr := run(`{"compartmentId":"ocid1.."}`); vr.Admissible || !hasFieldError(vr.Errors, "intent.data.vcnId") {
+		t.Errorf("subnet without vcnId: want required-field error on vcnId, got %+v", vr.Errors)
+	}
+}
+
+// TestPlanSubnet proves plan classification works for the second resource.
+func TestPlanSubnet(t *testing.T) {
+	plan := func(desired, observed string) executionPlan {
+		req := planRequest{
+			Kind:     "cic:network:subnet",
+			Desired:  schemaPayload{SchemaID: "cic:network:subnet-config", SchemaVersion: "v0.1.0", SchemaHash: "abc123", Encoding: encCanonicalJSON, Data: json.RawMessage(desired)},
+			Observed: schemaPayload{SchemaID: "cic:network:subnet-state", SchemaVersion: "v0.1.0", SchemaHash: "abc123", Encoding: encCanonicalJSON, Data: json.RawMessage(observed)},
+		}
+		raw, _ := json.Marshal(req)
+		out, err := Plan(nil, raw)
+		if err != nil {
+			t.Fatalf("Plan transport error: %v", err)
+		}
+		var p executionPlan
+		json.Unmarshal(decodeResult(t, out).Result, &p)
+		return p
+	}
+
+	// compartmentId is action-managed for subnet too.
+	if p := plan(`{"compartmentId":"a"}`, `{"compartmentId":"b"}`); p.Operation != "action" {
+		t.Errorf("subnet compartmentId change: op = %q, want action", p.Operation)
+	}
+	// displayName is mutable → update.
+	if p := plan(`{"displayName":"new"}`, `{"displayName":"old"}`); p.Operation != "update" {
+		t.Errorf("subnet displayName change: op = %q, want update", p.Operation)
+	}
+}
+
 func hasFieldError(errs []providerError, path string) bool {
 	for _, e := range errs {
 		if e.FieldPath == path {

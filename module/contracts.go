@@ -17,9 +17,12 @@ import (
 //go:embed schemas/vcn.json
 var vcnSchemaJSON []byte
 
+//go:embed schemas/subnet.json
+var subnetSchemaJSON []byte
+
 // embeddedSchemas is every generated {config, state} bundle compiled in. The
 // resource kind is the config $id minus the "-config" suffix.
-var embeddedSchemas = [][]byte{vcnSchemaJSON}
+var embeddedSchemas = [][]byte{vcnSchemaJSON, subnetSchemaJSON}
 
 // fieldDesc is one config field's contract: its CIC policy and coarse JSON type.
 type fieldDesc struct {

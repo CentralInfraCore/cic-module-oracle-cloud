@@ -1,0 +1,265 @@
+{
+  "config": {
+    "$id": "cic:network:subnet-config",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "description": "Intent (config) surface for Subnet — the fields a caller may set.",
+    "properties": {
+      "availabilityDomain": {
+        "description": "The subnet's availability domain.",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "cidrBlock": {
+        "description": "The subnet's CIDR block.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "compartmentId": {
+        "description": "The OCID (https://docs.oracle.com/iaas/Content/General/Concepts/identifiers.htm) of the compartment containing the subnet.",
+        "type": "string",
+        "x-cic-action": "ChangeSubnetCompartmentDetails",
+        "x-cic-policy": "action-managed"
+      },
+      "definedTags": {
+        "additionalProperties": {
+          "additionalProperties": {
+            "type": "object",
+            "x-cic-go-type": "interface{}"
+          },
+          "type": "object"
+        },
+        "description": "Defined tags for this resource.",
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "dhcpOptionsId": {
+        "description": "The OCID (https://docs.oracle.com/iaas/Content/General/Concepts/identifiers.htm) of the set of DHCP options that the subnet uses.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "displayName": {
+        "description": "A user-friendly name.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "dnsLabel": {
+        "description": "A DNS label for the subnet, used in conjunction with the VNIC's hostname and VCN's DNS label to form a fully qualified domain name (FQDN) for each VNIC within this subnet (for example, `bminstance1.subnet123.vcn1.oraclevcn.com`).",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "freeformTags": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Free-form tags for this resource.",
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "ipv4CidrBlocks": {
+        "description": "The list of all IPv4 CIDR blocks for the subnet that meets the following criteria: - Ipv4 CIDR blocks must be valid.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "x-cic-policy": "create-only"
+      },
+      "ipv6CidrBlock": {
+        "description": "For an IPv6-enabled subnet, this is the IPv6 prefix for the subnet's IP address space.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "ipv6CidrBlocks": {
+        "description": "The list of all IPv6 prefixes (Oracle allocated IPv6 GUA, ULA or private IPv6 prefixes, BYOIPv6 prefixes) for the subnet.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "x-cic-policy": "mutable"
+      },
+      "prohibitInternetIngress": {
+        "description": "Whether to disallow ingress internet traffic to VNICs within this subnet.",
+        "type": "boolean",
+        "x-cic-policy": "create-only"
+      },
+      "prohibitPublicIpOnVnic": {
+        "description": "Whether VNICs within this subnet can have public IP addresses.",
+        "type": "boolean",
+        "x-cic-policy": "create-only"
+      },
+      "routeTableId": {
+        "description": "The OCID (https://docs.oracle.com/iaas/Content/General/Concepts/identifiers.htm) of the route table that the subnet uses.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "securityListIds": {
+        "description": "The OCIDs of the security list or lists that the subnet uses.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "x-cic-policy": "mutable"
+      },
+      "vcnId": {
+        "description": "The OCID (https://docs.oracle.com/iaas/Content/General/Concepts/identifiers.htm) of the VCN the subnet is in.",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      }
+    },
+    "required": [
+      "compartmentId",
+      "vcnId"
+    ],
+    "title": "cic:network:subnet-config",
+    "type": "object",
+    "x-cic-schema-version": "v0.1.0"
+  },
+  "state": {
+    "$id": "cic:network:subnet-state",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "description": "Observed (state) surface for Subnet — the fields read back from the provider.",
+    "properties": {
+      "availabilityDomain": {
+        "description": "The subnet's availability domain.",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "cidrBlock": {
+        "description": "The subnet's CIDR block.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "compartmentId": {
+        "description": "The OCID (https://docs.oracle.com/iaas/Content/General/Concepts/identifiers.htm) of the compartment containing the subnet.",
+        "type": "string",
+        "x-cic-action": "ChangeSubnetCompartmentDetails",
+        "x-cic-policy": "action-managed"
+      },
+      "definedTags": {
+        "additionalProperties": {
+          "additionalProperties": {
+            "type": "object",
+            "x-cic-go-type": "interface{}"
+          },
+          "type": "object"
+        },
+        "description": "Defined tags for this resource.",
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "dhcpOptionsId": {
+        "description": "The OCID (https://docs.oracle.com/iaas/Content/General/Concepts/identifiers.htm) of the set of DHCP options that the subnet uses.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "displayName": {
+        "description": "A user-friendly name.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "dnsLabel": {
+        "description": "A DNS label for the subnet, used in conjunction with the VNIC's hostname and VCN's DNS label to form a fully qualified domain name (FQDN) for each VNIC within this subnet (for example, `bminstance1.subnet123.vcn1.oraclevcn.com`).",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "freeformTags": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Free-form tags for this resource.",
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "id": {
+        "description": "The subnet's Oracle ID (OCID (https://docs.oracle.com/iaas/Content/General/Concepts/identifiers.htm)).",
+        "type": "string",
+        "x-cic-policy": "provider-computed"
+      },
+      "ipv4CidrBlocks": {
+        "description": "The list of all IPv4 CIDR blocks for the subnet that meets the following criteria: - Ipv4 CIDR blocks must be valid.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "x-cic-policy": "create-only"
+      },
+      "ipv6CidrBlock": {
+        "description": "For an IPv6-enabled subnet, this is the IPv6 prefix for the subnet's IP address space.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "ipv6CidrBlocks": {
+        "description": "The list of all IPv6 prefixes (Oracle allocated IPv6 GUA, ULA or private IPv6 prefixes, BYOIPv6 prefixes) for the subnet.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "x-cic-policy": "mutable"
+      },
+      "ipv6VirtualRouterIp": {
+        "description": "For an IPv6-enabled subnet, this is the IPv6 address of the virtual router.",
+        "type": "string",
+        "x-cic-policy": "provider-computed"
+      },
+      "lifecycleState": {
+        "description": "The subnet's current state.",
+        "type": "string",
+        "x-cic-go-type": "SubnetLifecycleStateEnum",
+        "x-cic-policy": "provider-computed"
+      },
+      "prohibitInternetIngress": {
+        "description": "Whether to disallow ingress internet traffic to VNICs within this subnet.",
+        "type": "boolean",
+        "x-cic-policy": "create-only"
+      },
+      "prohibitPublicIpOnVnic": {
+        "description": "Whether VNICs within this subnet can have public IP addresses.",
+        "type": "boolean",
+        "x-cic-policy": "create-only"
+      },
+      "routeTableId": {
+        "description": "The OCID (https://docs.oracle.com/iaas/Content/General/Concepts/identifiers.htm) of the route table that the subnet uses.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "securityListIds": {
+        "description": "The OCIDs of the security list or lists that the subnet uses.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "x-cic-policy": "mutable"
+      },
+      "subnetDomainName": {
+        "description": "The subnet's domain name, which consists of the subnet's DNS label, the VCN's DNS label, and the `oraclevcn.com` domain.",
+        "type": "string",
+        "x-cic-policy": "provider-computed"
+      },
+      "timeCreated": {
+        "description": "The date and time the subnet was created, in the format defined by RFC3339 (https://tools.ietf.org/html/rfc3339).",
+        "type": "object",
+        "x-cic-go-type": "common.SDKTime",
+        "x-cic-policy": "provider-computed"
+      },
+      "vcnId": {
+        "description": "The OCID (https://docs.oracle.com/iaas/Content/General/Concepts/identifiers.htm) of the VCN the subnet is in.",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "virtualRouterIp": {
+        "description": "The IP address of the virtual router.",
+        "type": "string",
+        "x-cic-policy": "provider-computed"
+      },
+      "virtualRouterMac": {
+        "description": "The MAC address of the virtual router.",
+        "type": "string",
+        "x-cic-policy": "provider-computed"
+      }
+    },
+    "title": "cic:network:subnet-state",
+    "type": "object",
+    "x-cic-schema-version": "v0.1.0"
+  }
+}

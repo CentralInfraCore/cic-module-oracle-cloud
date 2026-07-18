@@ -54,18 +54,27 @@ def test_module_hashes_are_gosum_h1():
         assert re.fullmatch(r"h1:[A-Za-z0-9+/]+=*", h), f"not an h1 hash: {h}"
 
 
-def test_extracted_schema_hash_matches_committed_schema():
-    """P2.4 breaking-change gate (integrity half): the pinned
-    extracted_schema_hash must equal sha256 of the committed generated schema
-    (module/schemas/vcn.json). This catches a schema change that was not
-    re-pinned/reviewed — including one from an SDK bump via `make oci.generate`.
-    The semantic breaking-vs-compatible classification is `oci-extract -diff`.
-    """
+def _combined_schema_hash():
+    """sha256 over every committed generated schema, stable across files: each
+    file's own sha256 in sorted-filename order, joined and hashed again."""
     import hashlib
 
-    schema = REPO / "module" / "schemas" / "vcn.json"
-    digest = hashlib.sha256(schema.read_bytes()).hexdigest()
-    assert _dep()["extracted_schema_hash"] == f"sha256:{digest}", (
-        "extracted_schema_hash is stale — module/schemas/vcn.json changed. "
+    schemas = sorted((REPO / "module" / "schemas").glob("*.json"))
+    h = hashlib.sha256()
+    for f in schemas:
+        h.update(f"{f.name}:{hashlib.sha256(f.read_bytes()).hexdigest()}\n".encode())
+    return h.hexdigest()
+
+
+def test_extracted_schema_hash_matches_committed_schemas():
+    """P2.4 breaking-change gate (integrity half): the pinned
+    extracted_schema_hash must equal the combined hash of every committed
+    generated schema (module/schemas/*.json). This catches a schema change that
+    was not re-pinned/reviewed — including one from an SDK bump via
+    `make oci.generate`. The semantic breaking-vs-compatible classification is
+    `oci-extract -diff`.
+    """
+    assert _dep()["extracted_schema_hash"] == f"sha256:{_combined_schema_hash()}", (
+        "extracted_schema_hash is stale — module/schemas/*.json changed. "
         "Review the diff (oci-extract -diff), then re-pin the hash in oci-sdk.lock.yaml."
     )
