@@ -235,6 +235,9 @@ properties:
   abi:
     $ref: "abi.schema.yaml"
 
+  capability_manifest:
+    $ref: "capability-manifest.schema.yaml"
+
   release:
     type: object
     description: >-

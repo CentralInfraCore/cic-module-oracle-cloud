@@ -73,3 +73,17 @@ abi:
     - process
     - get
     - notify
+# capability_manifest declares what this module needs from the host; the host
+# enforces exactly this (relay-requirements.md R3). This is the OCI provisioner's
+# target reach — egress to OCI's REST endpoints and a sign-only OCI key handle.
+# The module is a scaffold and does not actuate yet; the declaration is the
+# contract a reviewer approves. host_functions/limits finalize with the relay
+# host surface (R1/R2). See docs/design/specs/capability-manifest.md.
+capability_manifest:
+  version: v0.1.0
+  egress:
+    - host: "*.oraclecloud.com"
+      methods: [GET, POST, PUT, DELETE, PATCH]
+  secrets:
+    - handle: "oci/*"
+      ops: [sign]

@@ -23,7 +23,7 @@ downstream is stable until these are.
 | ID | Piece | Where | Status | Spec |
 |----|-------|-------|--------|------|
 | P0.1 | `cic:provider` ABI: `validate/observe/plan/execute/poll/invoke/destroy` + envelope | this repo | spec | [provider-abi](specs/provider-abi.md) |
-| P0.2 | Capability manifest schema | this repo | spec | [capability-manifest](specs/capability-manifest.md) |
+| P0.2 | Capability manifest schema | this repo | **done** | [capability-manifest](specs/capability-manifest.md) |
 | P0.3 | Extend `abi.schema.yaml` with an `imports:` surface | this repo | todo | [provider-abi](specs/provider-abi.md) |
 | P0.4 | Intent/state correspondence + `effective_config` model | this repo | spec | [state-model](specs/state-model.md) |
 
