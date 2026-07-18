@@ -104,7 +104,26 @@
     ],
     "title": "cic:network:vcn-config",
     "type": "object",
+    "x-cic-resource": "Vcn",
     "x-cic-schema-version": "v0.1.0"
+  },
+  "operations": {
+    "ChangeVcnCompartment": {
+      "method": "POST",
+      "path": "/vcns/{vcnId}/actions/changeCompartment"
+    },
+    "CreateVcn": {
+      "method": "POST",
+      "path": "/vcns"
+    },
+    "DeleteVcn": {
+      "method": "DELETE",
+      "path": "/vcns/{vcnId}"
+    },
+    "UpdateVcn": {
+      "method": "PUT",
+      "path": "/vcns/{vcnId}"
+    }
   },
   "state": {
     "$id": "cic:network:vcn-state",
@@ -242,6 +261,7 @@
     },
     "title": "cic:network:vcn-state",
     "type": "object",
+    "x-cic-resource": "Vcn",
     "x-cic-schema-version": "v0.1.0"
   }
 }

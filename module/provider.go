@@ -162,9 +162,9 @@ func Describe(auth, data []byte) ([]byte, error) {
 		Version:    "1.0.0",
 		ABIVersion: abiVersion,
 		Provider:   providerName,
-		// The first resource kind targeted (roadmap: core/network). More are
-		// added as their payload schemas are generated (P2.3).
-		ResourceKinds: []string{"cic:network:vcn"},
+		// Derived from the embedded generated contracts, so describe() always
+		// reports exactly the kinds the module can validate/plan.
+		ResourceKinds: supportedKinds(),
 		Operations:    providerOps,
 		// The sign+send host surface this module requires (project.yaml
 		// abi.imports). Provisional until settled with the relay (R1/R2).
@@ -177,6 +177,18 @@ func Describe(auth, data []byte) ([]byte, error) {
 		},
 	}
 	return okResult(m)
+}
+
+// supportedKinds is the sorted list of resource kinds the module has an embedded
+// contract for (contracts.go).
+func supportedKinds() []string {
+	c := resourceContracts()
+	kinds := make([]string, 0, len(c))
+	for k := range c {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	return kinds
 }
 
 // ---- validate (envelope-level implemented; schema-conformance scaffold) ----
@@ -332,9 +344,62 @@ type planRequest struct {
 }
 
 type executionPlan struct {
-	PlanID    string   `json:"plan_id"`   // sha256:... over the canonical plan inputs
-	Operation string   `json:"operation"` // create|update|replace|action|noop
-	Notes     []string `json:"notes,omitempty"`
+	PlanID             string              `json:"plan_id"`   // sha256:... over the canonical plan inputs
+	Operation          string              `json:"operation"` // create|update|replace|action|noop
+	ProviderOperations []providerOperation `json:"provider_operations,omitempty"`
+	Notes              []string            `json:"notes,omitempty"`
+}
+
+// providerOperation is a concrete OCI operation the plan will run (P2.2 registry
+// names + HTTP method/path). A plan carrying these is reviewable and signable
+// before any mutation (provider-abi.md: plan/execute split).
+type providerOperation struct {
+	Operation string `json:"operation"` // e.g. UpdateVcn, ChangeVcnCompartment
+	Method    string `json:"method,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// planProviderOps maps the classified operation + changed fields to the concrete
+// OCI operations, by the SDK naming convention (Create/Update/Delete<Resource>)
+// and each action field's own operation (x-cic-action), attaching each one's HTTP
+// method+path from the embedded registry. A replace supersedes everything with
+// Delete+Create; otherwise a single Update carries the mutable changes and each
+// action field contributes its own operation.
+func planProviderOps(c resourceContract, op string, changed []string) []providerOperation {
+	mk := func(name, reason string) providerOperation {
+		po := providerOperation{Operation: name, Reason: reason}
+		if h, ok := c.operations[name]; ok {
+			po.Method, po.Path = h.method, h.path
+		}
+		return po
+	}
+	switch op {
+	case "noop":
+		return nil
+	case "replace":
+		return []providerOperation{
+			mk("Delete"+c.resource, "immutable field change requires replacement"),
+			mk("Create"+c.resource, "re-create with the desired configuration"),
+		}
+	}
+	var ops []providerOperation
+	hasUpdate := false
+	for _, name := range changed {
+		fd := c.fields[name]
+		switch fd.policy {
+		case "mutable":
+			hasUpdate = true
+		case "action-managed":
+			if fd.action != "" {
+				ops = append(ops, mk(fd.action, "field "+name+" changed"))
+			}
+		}
+	}
+	if hasUpdate {
+		ops = append([]providerOperation{mk("Update"+c.resource, "mutable fields changed")}, ops...)
+	}
+	return ops
 }
 
 // Plan produces an execution plan from desired + observed. This increment
@@ -398,9 +463,10 @@ func Plan(auth, data []byte) ([]byte, error) {
 	sort.Strings(changed)
 
 	return okResult(executionPlan{
-		PlanID:    "sha256:" + planHash(req.Kind, req.Desired, req.Observed),
-		Operation: op,
-		Notes:     planNotes(op, changed),
+		PlanID:             "sha256:" + planHash(req.Kind, req.Desired, req.Observed),
+		Operation:          op,
+		ProviderOperations: planProviderOps(c, op, changed),
+		Notes:              planNotes(op, changed),
 	})
 }
 

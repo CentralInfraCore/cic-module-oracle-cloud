@@ -177,7 +177,11 @@ oci.generate: ## Regenerate module/schemas/*.json from the pinned OCI SDK (needs
 		cd /tmp && go mod download github.com/oracle/oci-go-sdk/v65@$(OCI_SDK_VERSION); \
 		SDK=/tmp/ocigp/pkg/mod/github.com/oracle/oci-go-sdk/v65@$(OCI_SDK_VERSION)/core; \
 		cd /app/tools/oci-extract && \
+		CLIENT="$$SDK/core_virtualnetwork_client.go"; \
 		go run ./cmd/oci-extract -schema Vcn -ns cic:network:vcn \
 			"$$SDK/create_vcn_details.go" "$$SDK/update_vcn_details.go" \
-			"$$SDK/vcn.go" "$$SDK/change_vcn_compartment_details.go" > /app/module/schemas/vcn.json'
-	@echo "OK: module/schemas/vcn.json regenerated — review the diff and commit"
+			"$$SDK/vcn.go" "$$SDK/change_vcn_compartment_details.go" "$$CLIENT" > /app/module/schemas/vcn.json; \
+		go run ./cmd/oci-extract -schema Subnet -ns cic:network:subnet \
+			"$$SDK/create_subnet_details.go" "$$SDK/update_subnet_details.go" \
+			"$$SDK/subnet.go" "$$SDK/change_subnet_compartment_details.go" "$$CLIENT" > /app/module/schemas/subnet.json'
+	@echo "OK: module/schemas/*.json regenerated — review the diff and commit"

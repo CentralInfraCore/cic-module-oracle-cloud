@@ -68,7 +68,17 @@ func main() {
 
 	if *policyRes != "" || *schemaRes != "" {
 		var models []ociextract.Model
+		var operations []ociextract.Operation
 		for _, path := range files {
+			if strings.HasSuffix(path, "_client.go") {
+				ops, err := ociextract.ExtractClientFile(path)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: %v\n", err)
+					os.Exit(1)
+				}
+				operations = append(operations, ops...)
+				continue
+			}
 			ms, err := ociextract.ExtractFile(path)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -85,7 +95,13 @@ func main() {
 			stem = strings.ToLower(*schemaRes)
 		}
 		config, state := ociextract.ResourceSchemas(models, *schemaRes, stem, *version)
-		emit(map[string]interface{}{"config": config, "state": state})
+		bundle := map[string]interface{}{"config": config, "state": state}
+		// If a client file was supplied, attach the HTTP method+path for the
+		// operations a plan references (P2.2 → concrete, signable plan).
+		if len(operations) > 0 {
+			bundle["operations"] = ociextract.ResourceOperationMap(operations, *schemaRes, ociextract.ResourcePolicy(models, *schemaRes))
+		}
+		emit(bundle)
 		return
 	}
 

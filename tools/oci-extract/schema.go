@@ -88,9 +88,14 @@ func ResourceSchemas(models []Model, resource, schemaNS, version string) (config
 	config = schemaDoc(schemaNS+"-config", version,
 		"Intent (config) surface for "+resource+" — the fields a caller may set.",
 		configProps, required)
+	// The SDK resource name, so a consumer can construct operation names by
+	// convention (Create/Update/Delete<Resource>) — used by plan to emit
+	// provider_operations without embedding the full operation registry.
+	config["x-cic-resource"] = resource
 	state = schemaDoc(schemaNS+"-state", version,
 		"Observed (state) surface for "+resource+" — the fields read back from the provider.",
 		stateProps, nil)
+	state["x-cic-resource"] = resource
 	return config, state
 }
 
@@ -144,6 +149,31 @@ func typeToSchema(goType string) map[string]interface{} {
 		// A nested struct or otherwise unmapped named type: object, flagged.
 		return map[string]interface{}{"type": "object", "x-cic-go-type": t}
 	}
+}
+
+// ResourceOperationMap returns the HTTP method+path for the operations a plan
+// references for this resource: Create/Update/Delete<Resource> plus each
+// action-managed field's operation (x-cic-action minus "Details"). Keyed by
+// operation name, so the module can attach the concrete HTTP call to each
+// provider_operation without embedding the whole registry.
+func ResourceOperationMap(operations []Operation, resource string, policies []FieldPolicy) map[string]map[string]string {
+	need := map[string]bool{
+		"Create" + resource: true,
+		"Update" + resource: true,
+		"Delete" + resource: true,
+	}
+	for _, p := range policies {
+		if p.Policy == PolicyAction && p.Action != "" {
+			need[strings.TrimSuffix(p.Action, "Details")] = true
+		}
+	}
+	out := map[string]map[string]string{}
+	for _, op := range operations {
+		if need[op.Name] {
+			out[op.Name] = map[string]string{"method": op.HTTPMethod, "path": op.HTTPPath}
+		}
+	}
+	return out
 }
 
 // actionModels returns the Change*/Add*/Remove*…Details models that mention the
