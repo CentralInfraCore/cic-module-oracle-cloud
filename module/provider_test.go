@@ -50,17 +50,20 @@ func TestDescribeManifest(t *testing.T) {
 	}
 }
 
-func TestValidateWellFormed(t *testing.T) {
+// validateVcn builds a validation-request for kind cic:network:vcn with the given
+// intent data and runs Validate.
+func validateVcn(t *testing.T, data string) validationResult {
+	t.Helper()
 	req := validationRequest{
 		Kind: "cic:network:vcn",
 		Intent: schemaPayload{
 			SchemaID: "cic:network:vcn-config", SchemaVersion: "v0.1.0",
 			SchemaHash: "abc123", Encoding: encCanonicalJSON,
-			Data: json.RawMessage(`{"cidr":"10.0.0.0/16"}`),
+			Data: json.RawMessage(data),
 		},
 	}
-	data, _ := json.Marshal(req)
-	out, err := Validate(nil, data)
+	raw, _ := json.Marshal(req)
+	out, err := Validate(nil, raw)
 	if err != nil {
 		t.Fatalf("Validate transport error: %v", err)
 	}
@@ -72,14 +75,60 @@ func TestValidateWellFormed(t *testing.T) {
 	if err := json.Unmarshal(res.Result, &vr); err != nil {
 		t.Fatalf("validationResult decode: %v", err)
 	}
+	return vr
+}
+
+func TestValidateConformantIntent(t *testing.T) {
+	vr := validateVcn(t, `{"compartmentId":"ocid1.compartment.oc1..aaaa","displayName":"prod","cidrBlocks":["10.0.0.0/16"]}`)
 	if !vr.Admissible {
 		t.Errorf("admissible = false, want true (errors: %+v)", vr.Errors)
 	}
-	// Honesty contract: validate must report that it only checked the envelope,
-	// not schema-conformance (that needs P2.3).
-	if len(vr.Checked) == 0 || vr.Checked[0] != "envelope.well-formed" {
-		t.Errorf("checked = %v, want [envelope.well-formed]", vr.Checked)
+	// Now that a generated contract exists for the kind, validate must report
+	// that it checked schema-conformance, not just the envelope.
+	if len(vr.Checked) != 2 || vr.Checked[1] != "schema-conformance" {
+		t.Errorf("checked = %v, want [envelope.well-formed schema-conformance]", vr.Checked)
 	}
+}
+
+func TestValidateRejectsUnknownField(t *testing.T) {
+	// lifecycleState is provider-computed (output-only) — not in the config
+	// contract — so setting it must be rejected as an unknown field.
+	vr := validateVcn(t, `{"compartmentId":"ocid1..","lifecycleState":"AVAILABLE"}`)
+	if vr.Admissible {
+		t.Errorf("admissible = true, want false for an output-only field in the intent")
+	}
+	if !hasFieldError(vr.Errors, "intent.data.lifecycleState") {
+		t.Errorf("expected an error on intent.data.lifecycleState, got %+v", vr.Errors)
+	}
+}
+
+func TestValidateRejectsMissingRequired(t *testing.T) {
+	vr := validateVcn(t, `{"displayName":"x"}`) // no compartmentId (required)
+	if vr.Admissible {
+		t.Errorf("admissible = true, want false when required compartmentId is missing")
+	}
+	if !hasFieldError(vr.Errors, "intent.data.compartmentId") {
+		t.Errorf("expected a required-field error on compartmentId, got %+v", vr.Errors)
+	}
+}
+
+func TestValidateRejectsTypeMismatch(t *testing.T) {
+	vr := validateVcn(t, `{"compartmentId":"ocid1..","cidrBlocks":"not-an-array"}`)
+	if vr.Admissible {
+		t.Errorf("admissible = true, want false for a type mismatch")
+	}
+	if !hasFieldError(vr.Errors, "intent.data.cidrBlocks") {
+		t.Errorf("expected a type error on cidrBlocks, got %+v", vr.Errors)
+	}
+}
+
+func hasFieldError(errs []providerError, path string) bool {
+	for _, e := range errs {
+		if e.FieldPath == path {
+			return true
+		}
+	}
+	return false
 }
 
 func TestValidateRejectsMalformedEnvelope(t *testing.T) {
@@ -111,19 +160,17 @@ func TestValidateRejectsNonJSON(t *testing.T) {
 	}
 }
 
-func TestPlanNoop(t *testing.T) {
-	payload := schemaPayload{
-		SchemaID: "cic:network:vcn-config", SchemaVersion: "v0.1.0",
-		SchemaHash: "abc123", Encoding: encCanonicalJSON,
-		Data: json.RawMessage(`{"cidr":"10.0.0.0/16"}`),
+// planVcn runs Plan for kind cic:network:vcn with the given desired (config) and
+// observed (state) JSON.
+func planVcn(t *testing.T, desired, observed string) executionPlan {
+	t.Helper()
+	req := planRequest{
+		Kind:     "cic:network:vcn",
+		Desired:  schemaPayload{SchemaID: "cic:network:vcn-config", SchemaVersion: "v0.1.0", SchemaHash: "abc123", Encoding: encCanonicalJSON, Data: json.RawMessage(desired)},
+		Observed: schemaPayload{SchemaID: "cic:network:vcn-state", SchemaVersion: "v0.1.0", SchemaHash: "abc123", Encoding: encCanonicalJSON, Data: json.RawMessage(observed)},
 	}
-	// Same content, different key order/whitespace — canonicalEqual must see noop.
-	observed := payload
-	observed.Data = json.RawMessage(`{ "cidr" : "10.0.0.0/16" }`)
-	req := planRequest{Kind: "cic:network:vcn", Desired: payload, Observed: observed}
-	data, _ := json.Marshal(req)
-
-	out, err := Plan(nil, data)
+	raw, _ := json.Marshal(req)
+	out, err := Plan(nil, raw)
 	if err != nil {
 		t.Fatalf("Plan transport error: %v", err)
 	}
@@ -132,30 +179,37 @@ func TestPlanNoop(t *testing.T) {
 		t.Fatalf("Plan status = %q, want ok (raw: %s)", res.Status, out)
 	}
 	var p executionPlan
-	json.Unmarshal(res.Result, &p)
-	if p.Operation != "noop" {
-		t.Errorf("operation = %q, want noop", p.Operation)
+	if err := json.Unmarshal(res.Result, &p); err != nil {
+		t.Fatalf("executionPlan decode: %v", err)
 	}
-	if len(p.PlanID) < len("sha256:") {
-		t.Errorf("plan_id = %q, want a sha256 hash", p.PlanID)
-	}
+	return p
 }
 
-func TestPlanDiffIsScaffold(t *testing.T) {
-	desired := schemaPayload{
-		SchemaID: "cic:network:vcn-config", SchemaVersion: "v0.1.0",
-		SchemaHash: "abc123", Encoding: encCanonicalJSON,
-		Data: json.RawMessage(`{"cidr":"10.0.0.0/16"}`),
+func TestPlanClassifiesDiff(t *testing.T) {
+	cases := []struct {
+		name, desired, observed, wantOp string
+	}{
+		{"noop", `{"displayName":"prod"}`, `{"displayName":"prod"}`, "noop"},
+		{"noop-canonical", `{"displayName":"prod"}`, `{ "displayName" : "prod" }`, "noop"},
+		{"mutable-update", `{"displayName":"new"}`, `{"displayName":"old"}`, "update"},
+		{"create-only-replace", `{"dnsLabel":"a"}`, `{"dnsLabel":"b"}`, "replace"},
+		{"action-managed", `{"compartmentId":"a"}`, `{"compartmentId":"b"}`, "action"},
+		// Absent desired field = unmanaged (tri-state): observed-only differences
+		// do not force an operation.
+		{"unmanaged", `{"displayName":"same"}`, `{"displayName":"same","lifecycleState":"AVAILABLE"}`, "noop"},
+		// Escalation: a mutable + a create-only change → replace (most disruptive).
+		{"escalate-to-replace", `{"displayName":"new","dnsLabel":"a"}`, `{"displayName":"old","dnsLabel":"b"}`, "replace"},
 	}
-	observed := desired
-	observed.Data = json.RawMessage(`{"cidr":"10.1.0.0/16"}`) // differs
-	req := planRequest{Kind: "cic:network:vcn", Desired: desired, Observed: observed}
-	data, _ := json.Marshal(req)
-
-	out, _ := Plan(nil, data)
-	res := decodeResult(t, out)
-	if res.Status != "error" || res.Error == nil || res.Error.ProviderCode != "PLAN_DIFF_UNAVAILABLE" {
-		t.Errorf("non-noop plan: got %+v, want error/PLAN_DIFF_UNAVAILABLE", res)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := planVcn(t, c.desired, c.observed)
+			if p.Operation != c.wantOp {
+				t.Errorf("operation = %q, want %q (notes: %v)", p.Operation, c.wantOp, p.Notes)
+			}
+			if len(p.PlanID) < len("sha256:") {
+				t.Errorf("plan_id = %q, want a sha256 hash", p.PlanID)
+			}
+		})
 	}
 }
 

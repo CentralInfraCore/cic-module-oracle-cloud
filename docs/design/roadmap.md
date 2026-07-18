@@ -22,7 +22,7 @@ downstream is stable until these are.
 
 | ID | Piece | Where | Status | Spec |
 |----|-------|-------|--------|------|
-| P0.1 | `cic:provider` ABI: `describe/validate/observe/plan/execute/poll/invoke/destroy` + envelope | this repo | **surface implemented** (`module/provider.go`): `describe` done; `validate` envelope-level (schema-conformance pending P2.3); `plan` noop done, diff scaffold (P2.3); `observe/execute/poll/invoke/destroy` scaffold pending relay R1/R2 | [provider-abi](specs/provider-abi.md) |
+| P0.1 | `cic:provider` ABI: `describe/validate/observe/plan/execute/poll/invoke/destroy` + envelope | this repo | **`describe`/`validate`/`plan` implemented** (`module/provider.go` + embedded generated schema `module/schemas/vcn.json`): `validate` enforces schema-conformance (required/unknown/type), `plan` computes a real diff → update/replace/action/noop; `observe/execute/poll/invoke/destroy` scaffold pending relay R1/R2 | [provider-abi](specs/provider-abi.md) |
 | P0.2 | Capability manifest schema | this repo | **done** | [capability-manifest](specs/capability-manifest.md) |
 | P0.3 | Extend `abi.schema.yaml` with an `imports:` surface | this repo | todo | [provider-abi](specs/provider-abi.md) |
 | P0.4 | Intent/state correspondence + `effective_config` model | this repo | spec | [state-model](specs/state-model.md) |
@@ -59,7 +59,7 @@ code and CIC contracts; nothing Go ships at runtime.
 |----|-------|-------|--------|------|
 | P2.1 | Pin the OCI Go SDK exactly + record source hash | this repo | **done** (`oci-sdk.lock.yaml`) | [oci-schema-pipeline](specs/oci-schema-pipeline.md) |
 | P2.2 | `go/ast` extractor → operation registry (method, path, req/resp models) | this repo | **done** — models + client method/path join (`tools/oci-extract`); validated on the real pinned SDK (271 VCN ops, 0 missing method/path) | [oci-schema-pipeline](specs/oci-schema-pipeline.md) |
-| P2.3 | Model → CIC provider contract + module type generator | this repo | **in progress** — field-policy classifier + payload-schema emission done (`tools/oci-extract/{policy,schema}.go`, validated on real SDK: `cic:network:vcn-config`/`-state` valid draft-07); module type emission todo | [oci-schema-pipeline](specs/oci-schema-pipeline.md) |
+| P2.3 | Model → CIC provider contract + module type generator | this repo | **in progress** — field-policy + payload-schema emission done (`tools/oci-extract/{policy,schema}.go`); generated schema embedded into the guest (`module/schemas/vcn.json`, `make oci.generate`) and consumed by `validate`/`plan`; native module-type structs todo | [oci-schema-pipeline](specs/oci-schema-pipeline.md) |
 | P2.4 | Schema diff / breaking-change gate on SDK bump | this repo | todo | [oci-schema-pipeline](specs/oci-schema-pipeline.md) |
 
 **Exit criterion:** `CreateVcn` / `GetVcn` / `UpdateVcn` / `DeleteVcn` are

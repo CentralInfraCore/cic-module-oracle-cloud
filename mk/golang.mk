@@ -10,7 +10,7 @@
 
 .PHONY: golang.all golang.help golang.fmt golang.fmt-check golang.lint golang.vet golang.quality \
 	golang.test golang.coverage golang.coverage-profile golang.coverage-html golang.coverage-threshold \
-	golang.vuln golang.deps golang.clean golang.tdd oci.extract.test
+	golang.vuln golang.deps golang.clean golang.tdd oci.extract.test oci.generate
 
 # Default to showing help
 golang.all: golang.help
@@ -163,3 +163,21 @@ oci.extract.test: ## Vet + test the OCI schema extractor (tools/oci-extract, P2.
 	@echo "--- OCI schema extractor: go vet + test ---"
 	@docker compose exec -T builder sh -eu -o pipefail -c \
 		'cd /app/tools/oci-extract && go vet ./... && go test ./...'
+
+# ---- Regenerate the embedded CIC payload schemas (roadmap P2.3) ----
+# Downloads the pinned OCI SDK (oci-sdk.lock.yaml) into a scratch module cache
+# and regenerates module/schemas/<resource>.json from it. NOT a CI gate — it
+# needs network; the generated JSON is committed so the guest build is offline.
+# The pin here must match oci-sdk.lock.yaml provider_dependency.version.
+OCI_SDK_VERSION ?= v65.121.0
+oci.generate: ## Regenerate module/schemas/*.json from the pinned OCI SDK (needs network)
+	@echo "--- Regenerating embedded CIC payload schemas from OCI SDK $(OCI_SDK_VERSION) ---"
+	@docker compose exec -T builder sh -eu -o pipefail -c '\
+		export GOPATH=/tmp/ocigp GOMODCACHE=/tmp/ocigp/pkg/mod GOFLAGS=-mod=mod; \
+		cd /tmp && go mod download github.com/oracle/oci-go-sdk/v65@$(OCI_SDK_VERSION); \
+		SDK=/tmp/ocigp/pkg/mod/github.com/oracle/oci-go-sdk/v65@$(OCI_SDK_VERSION)/core; \
+		cd /app/tools/oci-extract && \
+		go run ./cmd/oci-extract -schema Vcn -ns cic:network:vcn \
+			"$$SDK/create_vcn_details.go" "$$SDK/update_vcn_details.go" \
+			"$$SDK/vcn.go" "$$SDK/change_vcn_compartment_details.go" > /app/module/schemas/vcn.json'
+	@echo "OK: module/schemas/vcn.json regenerated — review the diff and commit"

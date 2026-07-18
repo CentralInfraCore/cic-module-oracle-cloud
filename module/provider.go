@@ -22,6 +22,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
 )
 
 // abiVersion is the provider interface this module implements.
@@ -195,14 +198,82 @@ func Validate(auth, data []byte) ([]byte, error) {
 	}
 	errs = append(errs, checkEnvelope("intent", req.Intent)...)
 
+	checked := []string{"envelope.well-formed"}
+	// Schema-conformance against the generated contract (P2.3), when one exists
+	// for the kind and the envelope decoded as canonical-json. Envelope errors
+	// above already cover a malformed payload; only conform when it is usable.
+	if c, ok := resourceContracts()[req.Kind]; ok && len(errs) == 0 {
+		checked = append(checked, "schema-conformance")
+		errs = append(errs, conformIntent(c, req.Intent)...)
+	}
+
 	res := validationResult{
 		Admissible: len(errs) == 0,
-		// Honest about scope: envelope structure only. Schema-conformance is
-		// added once P2.3 generates the payload schemas.
-		Checked: []string{"envelope.well-formed"},
-		Errors:  errs,
+		Checked:    checked,
+		Errors:     errs,
 	}
 	return okResult(res)
+}
+
+// conformIntent checks an intent payload against a resource contract: required
+// fields present, no unknown/provider-computed fields set (the config contract
+// omits output-only fields, so an unknown key is either a typo or an attempt to
+// set a computed field), and a coarse JSON-type match per field.
+func conformIntent(c resourceContract, intent schemaPayload) []providerError {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(intent.Data, &obj); err != nil {
+		return []providerError{{Class: classSchema, FieldPath: "intent.data", Message: "data is not a JSON object"}}
+	}
+	var errs []providerError
+	for _, r := range c.required {
+		if _, ok := obj[r]; !ok {
+			errs = append(errs, providerError{
+				Class: classValidation, FieldPath: "intent.data." + r, Message: "required field missing",
+			})
+		}
+	}
+	for name, raw := range obj {
+		fd, ok := c.fields[name]
+		if !ok {
+			errs = append(errs, providerError{
+				Class: classSchema, FieldPath: "intent.data." + name,
+				Message: "unknown field: not in the config contract (provider-computed fields cannot be set)",
+			})
+			continue
+		}
+		if fd.jsonType != "" && !jsonKindMatches(fd.jsonType, raw) {
+			errs = append(errs, providerError{
+				Class: classSchema, FieldPath: "intent.data." + name,
+				Message: "type mismatch: want " + fd.jsonType,
+			})
+		}
+	}
+	return errs
+}
+
+// jsonKindMatches does a coarse type check by the first significant byte of the
+// raw JSON value. null is accepted for any type (tri-state edits). Adequate for
+// catching gross type errors without a full JSON-Schema engine in the guest.
+func jsonKindMatches(want string, raw json.RawMessage) bool {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return true
+	}
+	c := s[0]
+	switch want {
+	case "string":
+		return c == '"'
+	case "array":
+		return c == '['
+	case "object":
+		return c == '{'
+	case "boolean":
+		return c == 't' || c == 'f'
+	case "integer", "number":
+		return c == '-' || (c >= '0' && c <= '9')
+	default:
+		return true
+	}
 }
 
 // checkEnvelope validates a schema-payload's structural contract (provider-abi.md
@@ -271,22 +342,110 @@ func Plan(auth, data []byte) ([]byte, error) {
 		return errResult(&envErrs[0])
 	}
 
-	if canonicalEqual(req.Desired.Data, req.Observed.Data) {
-		plan := executionPlan{
-			PlanID:    "sha256:" + planHash(req.Kind, req.Desired, req.Observed),
-			Operation: "noop",
-			Notes:     []string{"desired == observed; no provider operations"},
+	c, ok := resourceContracts()[req.Kind]
+	if !ok {
+		// No generated contract for this kind: only the no-op case is decidable.
+		if canonicalEqual(req.Desired.Data, req.Observed.Data) {
+			return okResult(noopPlan(req))
 		}
-		return okResult(plan)
+		return errResult(&providerError{
+			Class: classInternal, ProviderCode: "PLAN_CONTRACT_UNAVAILABLE", Retryable: false,
+			Message: "plan: no generated contract for kind " + req.Kind + "; only the no-op case is decidable.",
+		})
 	}
 
-	return errResult(&providerError{
-		Class:        classInternal,
-		ProviderCode: "PLAN_DIFF_UNAVAILABLE",
-		Retryable:    false,
-		Message: "plan: a non-noop diff requires the generated OCI operation registry " +
-			"(roadmap P2.2/P2.3) to map fields to provider_operations; not yet available.",
+	desired, err := decodeObject(req.Desired.Data)
+	if err != nil {
+		return errResult(&providerError{Class: classSchema, FieldPath: "desired.data", Message: err.Error()})
+	}
+	observed, err := decodeObject(req.Observed.Data)
+	if err != nil {
+		return errResult(&providerError{Class: classSchema, FieldPath: "observed.data", Message: err.Error()})
+	}
+
+	// Diff over the intent's declared fields. An absent desired field is
+	// unmanaged (tri-state: don't touch — provider-abi.md payload conventions),
+	// so only fields the intent sets are compared. Each changed field escalates
+	// the operation by its policy: mutable→update, action-managed→action,
+	// create-only/input-only→replace.
+	var changed []string
+	op := "noop"
+	for name, dv := range desired {
+		fd, ok := c.fields[name]
+		if !ok {
+			continue // unknown fields are a validate concern, not plan
+		}
+		if valueEqual(dv, observed[name]) {
+			continue
+		}
+		changed = append(changed, name)
+		op = escalateOp(op, policyOp(fd.policy))
+	}
+	sort.Strings(changed)
+
+	return okResult(executionPlan{
+		PlanID:    "sha256:" + planHash(req.Kind, req.Desired, req.Observed),
+		Operation: op,
+		Notes:     planNotes(op, changed),
 	})
+}
+
+func noopPlan(req planRequest) executionPlan {
+	return executionPlan{
+		PlanID:    "sha256:" + planHash(req.Kind, req.Desired, req.Observed),
+		Operation: "noop",
+		Notes:     []string{"desired == observed; no provider operations"},
+	}
+}
+
+func decodeObject(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("data is not a JSON object")
+	}
+	return m, nil
+}
+
+// valueEqual compares two intent/state field values; an absent value on one side
+// only is a change.
+func valueEqual(a, b json.RawMessage) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	return canonicalEqual(a, b)
+}
+
+// policyOp maps a field's CIC policy to the plan operation a change to it forces.
+func policyOp(policy string) string {
+	switch policy {
+	case "mutable":
+		return "update"
+	case "action-managed":
+		return "action"
+	case "create-only", "input-only":
+		return "replace"
+	default:
+		return "update"
+	}
+}
+
+// escalateOp keeps the most disruptive operation: replace > action > update > noop.
+func escalateOp(cur, next string) string {
+	rank := map[string]int{"noop": 0, "update": 1, "action": 2, "replace": 3}
+	if rank[next] > rank[cur] {
+		return next
+	}
+	return cur
+}
+
+func planNotes(op string, changed []string) []string {
+	if op == "noop" {
+		return []string{"desired == observed; no provider operations"}
+	}
+	return []string{op + ": changed fields " + strings.Join(changed, ", ")}
 }
 
 // planHash is a deterministic hash over the plan inputs, so a plan is identifiable

@@ -240,6 +240,46 @@ func TestHostLoadProviderOps(t *testing.T) {
 	}
 }
 
+// TestHostLoadValidateConformance proves the embedded generated schema
+// (schemas/vcn.json) is parsed and enforced inside the real wasm runtime — the
+// critical check, since the host instantiates the guest without running _start,
+// so contract parsing must be lazy (contracts.go), not init().
+func TestHostLoadValidateConformance(t *testing.T) {
+	ctx, instance, callFn, allocateFn, deallocateFn := loadModule(t)
+
+	admissible := func(intentData string) (bool, string) {
+		req := `{"kind":"cic:network:vcn","intent":{"schema_id":"cic:network:vcn-config","schema_version":"v0.1.0","schema_hash":"abc123","encoding":"canonical-json","data":` + intentData + `}}`
+		env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "validate", "{}", req)
+		if string(env.Error) != "null" {
+			t.Fatalf("validate transport error = %s, want null", env.Error)
+		}
+		var res struct {
+			Result struct {
+				Admissible bool     `json:"admissible"`
+				Checked    []string `json:"checked"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(env.Data, &res); err != nil {
+			t.Fatalf("decode validationResult: %v (raw: %s)", err, env.Data)
+		}
+		checked := ""
+		if len(res.Result.Checked) > 0 {
+			checked = res.Result.Checked[len(res.Result.Checked)-1]
+		}
+		return res.Result.Admissible, checked
+	}
+
+	// A conformant intent is admissible AND the module reports it ran
+	// schema-conformance (proving the embedded contract was found in wasm).
+	if ok, checked := admissible(`{"compartmentId":"ocid1..","displayName":"prod"}`); !ok || checked != "schema-conformance" {
+		t.Errorf("conformant intent: admissible=%v checked=%q, want true/schema-conformance", ok, checked)
+	}
+	// A provider-computed field in the intent is rejected by the embedded contract.
+	if ok, _ := admissible(`{"compartmentId":"ocid1..","lifecycleState":"AVAILABLE"}`); ok {
+		t.Errorf("intent with output-only field: admissible=true, want false")
+	}
+}
+
 func writeString(t *testing.T, ctx context.Context, instance api.Module, allocateFn api.Function, s string) (uint32, uint32) {
 	data := []byte(s)
 	results, err := allocateFn.Call(ctx, uint64(len(data)))
