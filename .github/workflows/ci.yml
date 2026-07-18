@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - devel
       - feat/**
       - fix/**
       - chore/**
@@ -49,6 +50,9 @@ jobs:
 
       - name: Run Go quality gate (module/)
         run: make golang.quality
+
+      - name: Test the OCI schema extractor (tools/oci-extract)
+        run: make oci.extract.test
 
       - name: Build WASM guest module (TinyGo)
         run: make wasm.build

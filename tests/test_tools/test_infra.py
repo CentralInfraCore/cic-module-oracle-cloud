@@ -346,10 +346,15 @@ class TestValidateFinalProjectYamlRealSchema:
     def real_schema_manager(
         self, mock_config, mock_git_service, mock_vault_service, mocker, tmp_path
     ):
-        # Copy the real project.schema.yaml (and the abi.schema.yaml it
-        # $ref's) into a scratch project root so the test exercises the
-        # actual schemas shipped with the repository, without mutating them.
-        for name in ("project.schema.yaml", "abi.schema.yaml"):
+        # Copy the real project.schema.yaml (and the sibling schemas it
+        # $ref's -- abi.schema.yaml, capability-manifest.schema.yaml) into a
+        # scratch project root so the test exercises the actual schemas
+        # shipped with the repository, without mutating them.
+        for name in (
+            "project.schema.yaml",
+            "abi.schema.yaml",
+            "capability-manifest.schema.yaml",
+        ):
             (tmp_path / name).write_text((PROJECT_ROOT / name).read_text())
 
         logger = mocker.MagicMock(spec=logging.Logger)

@@ -1,11 +1,19 @@
 # Spec — capability manifest
 
-**Piece:** P0.2, P1.3 · **Status:** spec
+**Piece:** P0.2 (schema) done · P1.3 (host enforcement) todo, in CIC-Relay
 
 The security model for third-party modules. A module **declares** the narrow set
 of capabilities it needs; the host **enforces** exactly that set. Nothing the
 module does can exceed its declaration, and the declaration is reviewable before
 the module is trusted.
+
+**P0.2 is built.** The formal schema is
+[`capability-manifest.schema.yaml`](../../../capability-manifest.schema.yaml)
+(referenced from `project.schema.yaml` by `$ref`); the reference module's
+declaration lives in `project.yaml`'s `capability_manifest:` block;
+`tests/test_capability_manifest.py` validates it and proves the schema rejects
+malformed manifests. Host-side **enforcement** (P1.3) is a relay requirement —
+see [relay-requirements.md](../relay-requirements.md) R3.
 
 ## Why declaration, not trust
 
