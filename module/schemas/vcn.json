@@ -104,6 +104,7 @@
     ],
     "title": "cic:network:vcn-config",
     "type": "object",
+    "x-cic-resource": "Vcn",
     "x-cic-schema-version": "v0.1.0"
   },
   "state": {
@@ -242,6 +243,7 @@
     },
     "title": "cic:network:vcn-state",
     "type": "object",
+    "x-cic-resource": "Vcn",
     "x-cic-schema-version": "v0.1.0"
   }
 }

@@ -88,9 +88,14 @@ func ResourceSchemas(models []Model, resource, schemaNS, version string) (config
 	config = schemaDoc(schemaNS+"-config", version,
 		"Intent (config) surface for "+resource+" — the fields a caller may set.",
 		configProps, required)
+	// The SDK resource name, so a consumer can construct operation names by
+	// convention (Create/Update/Delete<Resource>) — used by plan to emit
+	// provider_operations without embedding the full operation registry.
+	config["x-cic-resource"] = resource
 	state = schemaDoc(schemaNS+"-state", version,
 		"Observed (state) surface for "+resource+" — the fields read back from the provider.",
 		stateProps, nil)
+	state["x-cic-resource"] = resource
 	return config, state
 }
 

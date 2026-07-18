@@ -344,9 +344,52 @@ type planRequest struct {
 }
 
 type executionPlan struct {
-	PlanID    string   `json:"plan_id"`   // sha256:... over the canonical plan inputs
-	Operation string   `json:"operation"` // create|update|replace|action|noop
-	Notes     []string `json:"notes,omitempty"`
+	PlanID             string              `json:"plan_id"`   // sha256:... over the canonical plan inputs
+	Operation          string              `json:"operation"` // create|update|replace|action|noop
+	ProviderOperations []providerOperation `json:"provider_operations,omitempty"`
+	Notes              []string            `json:"notes,omitempty"`
+}
+
+// providerOperation is a concrete OCI operation the plan will run (P2.2 registry
+// names). A plan carrying these is reviewable and signable before any mutation
+// (provider-abi.md: plan/execute split).
+type providerOperation struct {
+	Operation string `json:"operation"` // e.g. UpdateVcn, ChangeVcnCompartment
+	Reason    string `json:"reason,omitempty"`
+}
+
+// planProviderOps maps the classified operation + changed fields to the concrete
+// OCI operations, by the SDK naming convention (Create/Update/Delete<Resource>)
+// and each action field's own operation (x-cic-action). A replace supersedes
+// everything with Delete+Create; otherwise a single Update carries the mutable
+// changes and each action field contributes its own operation.
+func planProviderOps(c resourceContract, op string, changed []string) []providerOperation {
+	switch op {
+	case "noop":
+		return nil
+	case "replace":
+		return []providerOperation{
+			{Operation: "Delete" + c.resource, Reason: "immutable field change requires replacement"},
+			{Operation: "Create" + c.resource, Reason: "re-create with the desired configuration"},
+		}
+	}
+	var ops []providerOperation
+	hasUpdate := false
+	for _, name := range changed {
+		fd := c.fields[name]
+		switch fd.policy {
+		case "mutable":
+			hasUpdate = true
+		case "action-managed":
+			if fd.action != "" {
+				ops = append(ops, providerOperation{Operation: fd.action, Reason: "field " + name + " changed"})
+			}
+		}
+	}
+	if hasUpdate {
+		ops = append([]providerOperation{{Operation: "Update" + c.resource, Reason: "mutable fields changed"}}, ops...)
+	}
+	return ops
 }
 
 // Plan produces an execution plan from desired + observed. This increment
@@ -410,9 +453,10 @@ func Plan(auth, data []byte) ([]byte, error) {
 	sort.Strings(changed)
 
 	return okResult(executionPlan{
-		PlanID:    "sha256:" + planHash(req.Kind, req.Desired, req.Observed),
-		Operation: op,
-		Notes:     planNotes(op, changed),
+		PlanID:             "sha256:" + planHash(req.Kind, req.Desired, req.Observed),
+		Operation:          op,
+		ProviderOperations: planProviderOps(c, op, changed),
+		Notes:              planNotes(op, changed),
 	})
 }
 

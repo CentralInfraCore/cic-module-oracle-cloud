@@ -22,7 +22,7 @@ downstream is stable until these are.
 
 | ID | Piece | Where | Status | Spec |
 |----|-------|-------|--------|------|
-| P0.1 | `cic:provider` ABI: `describe/validate/observe/plan/execute/poll/invoke/destroy` + envelope | this repo | **`describe`/`validate`/`plan` implemented** (`module/provider.go` + embedded generated schema `module/schemas/vcn.json`): `validate` enforces schema-conformance (required/unknown/type), `plan` computes a real diff → update/replace/action/noop; `observe/execute/poll/invoke/destroy` scaffold pending relay R1/R2 | [provider-abi](specs/provider-abi.md) |
+| P0.1 | `cic:provider` ABI: `describe/validate/observe/plan/execute/poll/invoke/destroy` + envelope | this repo | **`describe`/`validate`/`plan` implemented** (`module/provider.go` + embedded generated schema `module/schemas/vcn.json`): `validate` enforces schema-conformance (required/unknown/type), `plan` computes a real diff → update/replace/action/noop and emits concrete `provider_operations` (Update/Delete+Create/Change… from the P2.2 registry names), making the plan reviewable/signable; `observe/execute/poll/invoke/destroy` scaffold pending relay R1/R2 | [provider-abi](specs/provider-abi.md) |
 | P0.2 | Capability manifest schema | this repo | **done** | [capability-manifest](specs/capability-manifest.md) |
 | P0.3 | Extend `abi.schema.yaml` with an `imports:` surface | this repo | **done** — `abi.schema.yaml` `imports` schema + `project.yaml` `abi.imports` (`cic-flow`: `sign`/`actuate`, provisional); `describe()` reports it. Declaration only (names settled with relay R1/R2) | [provider-abi](specs/provider-abi.md) |
 | P0.4 | Intent/state correspondence + `effective_config` model | this repo | spec | [state-model](specs/state-model.md) |

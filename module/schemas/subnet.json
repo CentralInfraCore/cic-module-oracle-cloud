@@ -112,6 +112,7 @@
     ],
     "title": "cic:network:subnet-config",
     "type": "object",
+    "x-cic-resource": "Subnet",
     "x-cic-schema-version": "v0.1.0"
   },
   "state": {
@@ -260,6 +261,7 @@
     },
     "title": "cic:network:subnet-state",
     "type": "object",
+    "x-cic-resource": "Subnet",
     "x-cic-schema-version": "v0.1.0"
   }
 }

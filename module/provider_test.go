@@ -130,6 +130,40 @@ func TestValidateRejectsTypeMismatch(t *testing.T) {
 	}
 }
 
+// TestPlanProviderOperations checks that plan maps changed fields to the concrete
+// OCI operations (P2.2 registry names), making the plan reviewable/signable.
+func TestPlanProviderOperations(t *testing.T) {
+	ops := func(p executionPlan) []string {
+		var names []string
+		for _, o := range p.ProviderOperations {
+			names = append(names, o.Operation)
+		}
+		return names
+	}
+
+	// mutable change -> UpdateVcn
+	if got := ops(planVcn(t, `{"displayName":"new"}`, `{"displayName":"old"}`)); len(got) != 1 || got[0] != "UpdateVcn" {
+		t.Errorf("displayName change: provider_operations = %v, want [UpdateVcn]", got)
+	}
+	// action-managed change -> ChangeVcnCompartment
+	if got := ops(planVcn(t, `{"compartmentId":"a"}`, `{"compartmentId":"b"}`)); len(got) != 1 || got[0] != "ChangeVcnCompartment" {
+		t.Errorf("compartmentId change: provider_operations = %v, want [ChangeVcnCompartment]", got)
+	}
+	// immutable change -> Delete + Create (replace)
+	if got := ops(planVcn(t, `{"dnsLabel":"a"}`, `{"dnsLabel":"b"}`)); len(got) != 2 || got[0] != "DeleteVcn" || got[1] != "CreateVcn" {
+		t.Errorf("dnsLabel change: provider_operations = %v, want [DeleteVcn CreateVcn]", got)
+	}
+	// combined mutable + action -> UpdateVcn then ChangeVcnCompartment
+	got := ops(planVcn(t, `{"displayName":"new","compartmentId":"a"}`, `{"displayName":"old","compartmentId":"b"}`))
+	if len(got) != 2 || got[0] != "UpdateVcn" || got[1] != "ChangeVcnCompartment" {
+		t.Errorf("mutable+action change: provider_operations = %v, want [UpdateVcn ChangeVcnCompartment]", got)
+	}
+	// noop -> no provider operations
+	if got := ops(planVcn(t, `{"displayName":"same"}`, `{"displayName":"same"}`)); len(got) != 0 {
+		t.Errorf("noop: provider_operations = %v, want none", got)
+	}
+}
+
 // TestValidateSubnet proves the pipeline generalizes past VCN: a second embedded
 // contract (cic:network:subnet, two required fields) validates the same way.
 func TestValidateSubnet(t *testing.T) {
