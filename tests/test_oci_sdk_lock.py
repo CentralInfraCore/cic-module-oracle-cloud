@@ -22,7 +22,14 @@ def _dep():
 
 def test_required_fields_present():
     dep = _dep()
-    for key in ("name", "version", "vcs", "module_hash", "gomod_hash", "extracted_schema_hash"):
+    for key in (
+        "name",
+        "version",
+        "vcs",
+        "module_hash",
+        "gomod_hash",
+        "extracted_schema_hash",
+    ):
         assert key in dep, f"missing {key}"
     for key in ("url", "ref", "commit"):
         assert key in dep["vcs"], f"missing vcs.{key}"

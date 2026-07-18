@@ -6,7 +6,6 @@ project.schema.yaml via $ref, and that the schema actually rejects
 malformed manifests (a schema that only ever passes proves nothing).
 """
 
-import copy
 from pathlib import Path
 
 import pytest
