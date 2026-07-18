@@ -47,26 +47,34 @@ trust and extensibility:
 │  CIC host (relay) — provider-agnostic                                │
 │    · loads the signed WASM module, verifies its signature            │
 │    · enforces the module's capability manifest                       │
-│    · exposes host functions: http.request, vault.sign                │
-│    · records every host call into the ProofTrace                     │
+│    · exposes a capability boundary: the trust-flow (see below)       │
+│    · folds every host-call audit entry into the ProofTrace           │
 │    · runs object-level intent↔state verification                     │
 │                                                                      │
-│      ▲ host functions (capability boundary)                          │
+│      ▲ host capability boundary                                      │
 │      │                                                               │
 │  WASM module (this repo, or a third party) — sandboxed               │
-│    · provider logic: build request, sign scheme, map response        │
+│    · provider logic: build request, canonical signing string, map    │
 │    · declares its capability needs (egress hosts, secret handles)    │
 │    · carries no secret, no raw network access                        │
 │                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
-        │ http.request                    │ vault.sign
-        ▼                                 ▼
-  http-executor (Rust, native)      vault-adapter (Rust, native)
-  reqwest + EgressPolicy            Vault transit / countersign
-        │                                 (private key stays in Vault)
+        │ trust-flow (cic_ffi_run_flow): mint identity → countersign →
+        │ seal → open credential in airlock → actuate → chained audit
+        ▼
+  connections + module (custody) → vault-adapter (RSA sign) → http-executor
+  (reqwest + EgressPolicy)                          (key stays in the airlock)
         ▼
   OCI REST API
 ```
+
+**The boundary is not yet what this module needs.** The relay's trust-flow
+(`cic_ffi_run_flow`) is real, but today it is native-FFI only (not reachable from
+a WASM guest) and applies a **Bearer** credential, whereas OCI needs **RSA request
+signing**. The boundary above is the *target*; the concrete deltas are tracked in
+[relay-requirements.md](relay-requirements.md) (R1, R2) and specified in
+[specs/host-functions.md](specs/host-functions.md). CIC-Relay is read-only from
+this repo — we signal these needs, we do not build them here.
 
 The host is **provider-agnostic**: it never contains OCI-specific code. Every
 provider — Oracle, and later AWS, Azure — is a module behind the same generic
@@ -104,7 +112,7 @@ There is no OCI SDK binary in the running system. The OCI Go SDK is a
 | Models (`CreateVcnDetails`, `Vcn`) | build-time `go/ast` extraction → generated module types + CIC contracts |
 | Operation registry (`CreateVcn` → `POST /vcns`) | build-time extraction → module's operation table |
 | HTTP transport | **not the SDK** — the relay's `http-executor` |
-| Request signing (RSA over canonical headers) | the module builds the OCI canonical signing string; `vault.sign` signs it; the key stays in Vault |
+| Request signing (RSA over canonical headers) | the module builds the OCI canonical signing string; the airlock signs it via `vault-adapter` transit; the key stays in Vault. Requires a relay change — the current actuation applies a Bearer credential, not an RSA signature ([relay-requirements.md](relay-requirements.md) R2) |
 | Retry / waiter / Work Request | the plan the module emits + host policy |
 
 At runtime the module is self-contained OCI logic (generated models + the OCI

@@ -23,16 +23,20 @@ interface provider {
 
 ### Operation meanings
 
-| Op | Meaning | Host calls |
-|----|---------|-----------|
+Host boundary: `none` = pure (no host call) · `sign+send` = a signed,
+egress-policed HTTP actuation through the trust-flow. OCI signs **every** request
+(reads included), so any op that touches OCI is `sign+send`.
+
+| Op | Meaning | Host boundary |
+|----|---------|---------------|
 | `describe` | Module manifest: identity, supported resource kinds, required capabilities. | none |
 | `validate` | Is this intent well-formed and admissible against the schema? | none |
-| `observe` | Read current provider state; return observed state + `effective_config`. | `http` |
+| `observe` | Read current provider state; return observed state + `effective_config`. | sign+send |
 | `plan` | Given desired + observed, produce an ordered, signable execution plan. No mutation. | none |
-| `execute` | Carry out an **exact, approved** plan. Returns a receipt or async job ref. | `http`, `vault` |
-| `poll` | Advance/observe an async job (OCI Work Request) toward a terminal state. | `http` |
-| `invoke` | A named non-CRUD action (`start`, `stop`, `attach`, `changeCompartment`). | `http`, `vault` |
-| `destroy` | Tear down a resource. | `http`, `vault` |
+| `execute` | Carry out an **exact, approved** plan. Returns a receipt or async job ref. | sign+send |
+| `poll` | Advance/observe an async job (OCI Work Request) toward a terminal state. | sign+send |
+| `invoke` | A named non-CRUD action (`start`, `stop`, `attach`, `changeCompartment`). | sign+send |
+| `destroy` | Tear down a resource. | sign+send |
 
 Splitting `plan` from `execute` is deliberate: a plan can be reviewed and signed
 before any mutation; `execute` runs the signed plan verbatim.
@@ -143,11 +147,16 @@ surface naming the host functions the module requires, so `abi_manifest_test`
 abi:
   exports: [allocate, deallocate, Call]
   imports:
-    - module: http
-      functions: [request]
-    - module: vault
-      functions: [sign]
+    # Illustrative names. The relay does not expose these yet — its trust-flow
+    # is native-FFI only and Bearer-based. The concrete host surface (a
+    # sign-then-send capability for OCI) is a relay requirement, not a given.
+    - module: cic-flow          # exact module/function names TBD with the relay
+      functions: [sign, actuate]
 ```
+
+The exact import names are settled with the relay when the host surface lands —
+see [relay-requirements.md](../relay-requirements.md) (R1, R2). This module declares
+its imports; it does not define the host side.
 
 See [host-functions.md](host-functions.md) for the host side and
 [capability-manifest.md](capability-manifest.md) for the enforced scope.

@@ -18,14 +18,21 @@ namespace it opens. Written 2026-07-18 from the design session recorded in
 - [specs/capability-manifest.md](specs/capability-manifest.md) — what a module
   declares it needs, and what the host enforces. The security model for
   third-party modules.
-- [specs/host-functions.md](specs/host-functions.md) — the `http` and `vault`
-  host functions the relay exposes to guests, backed by `http-executor` and
-  `vault-adapter`.
+- [specs/host-functions.md](specs/host-functions.md) — the relay's capability
+  boundary: the actual trust-flow (`cic_ffi_run_flow`), and the gap between it and
+  what OCI needs. Corrected against the relay source.
 - [specs/oci-schema-pipeline.md](specs/oci-schema-pipeline.md) — turning the
   OCI Go SDK into a build-time schema source: operation registry and model
   extraction.
 - [specs/state-model.md](specs/state-model.md) — intent/state object-level
   correspondence and the `effective_config` projection.
+
+## Requirements toward the relay
+
+- [relay-requirements.md](relay-requirements.md) — CIC-Relay is **read-only** from
+  this repo. Relay bugs and needs (e.g. exposing the trust-flow to WASM guests,
+  OCI RSA signing) are recorded here and raised to the relay's owner — never
+  worked around by editing the relay from here.
 
 ## One-paragraph summary
 
