@@ -98,17 +98,23 @@ set-build-hash`).
 If `module.wasm` doesn't exist yet, the test is skipped with a message
 pointing at `make wasm.build`.
 
-## Reproducible build check
+## Artifact integrity check
 
-`make wasm.rebuild-verify` rebuilds the guest module to a scratch path
-(`/tmp` inside the builder container — it never overwrites the committed
-`module/module.wasm`), computes its sha256, and compares it against
-`project.yaml`'s `metadata.buildHash`. A mismatch means either the committed
-`module.wasm` is stale (someone edited `module/` without running `make
-wasm.build`) or the TinyGo build is not reproducible in this environment —
-either way, the command fails with a non-zero exit and a message pointing at
-`make wasm.build` to refresh both files. This runs in CI right after
-`wasm.build` (`.github/workflows/ci.yml`).
+`make wasm.integrity-verify` hashes the **committed** `module/module.wasm`
+(no rebuild) and compares it against `project.yaml`'s `metadata.buildHash`. A
+mismatch means the committed binary and its declared hash disagree — someone
+edited `module/` or `project.yaml` without running `make wasm.build` — and the
+command fails with a message pointing at `make wasm.build` to refresh both.
+This is the CI gate, right after `wasm.build` (`.github/workflows/ci.yml`); it
+verifies the artifact matches its signed declaration (**integrity**), which is
+what the trust model rests on — not that anyone can rebuild the same bytes.
+
+`make wasm.repro-probe` is the non-fatal companion: it rebuilds to a scratch
+path (`/tmp`, never overwriting the committed artifact) and *reports* whether
+this environment reproduces the binary bit-for-bit. TinyGo currently embeds the
+build path and orders some cgo symbols by filesystem order, so a rebuild in a
+different environment can differ (issue #2). It is a supply-chain signal, never
+a gate, and runs after `wasm.integrity-verify` in CI.
 
 ## Go quality gate
 

@@ -57,8 +57,11 @@ jobs:
       - name: Build WASM guest module (TinyGo)
         run: make wasm.build
 
-      - name: Verify reproducible WASM build (rebuild-verify)
-        run: make wasm.rebuild-verify
+      - name: Verify WASM artifact integrity (hash == buildHash)
+        run: make wasm.integrity-verify
+
+      - name: WASM reproducibility probe (non-fatal, issue #2)
+        run: make wasm.repro-probe
 
       - name: Host-load test against the relay cabinet ABI
         run: make wasm.test

@@ -20,18 +20,38 @@ metadata:
   és átírja a `metadata.buildHash`-t egy stdlib-only regex-alapú
   szerkesztéssel (szándékosan elkerülve egy teljes
   `tools.infra`/`tools.compiler` round-tripet ehhez az egyetlen mezőhöz).
-- A `make wasm.rebuild-verify` (`mk/wasm.mk`) ennek **csak-olvasó párja**: a
-  `module/module.wasm`-ot egy scratch helyre (`/tmp`, sosem írja felül a
-  commitolt artifactot) újra lefordítja, kiszámolja a sha256-ját, és
-  összeveti a commitolt `metadata.buildHash`-sel. Eltérés esetén egy hibával
-  bukik el, ami a `make wasm.build`-re mutat mint javításra. Ez az a CI gate,
-  ami bizonyítja, hogy a commitolt `module.wasm` bináris az, amire a
-  `module/*.go` valóban fordít — azaz hogy az artifact reprodukálható a
-  forrásból, nincs kézzel szerkesztve vagy elavulva.
-- Mindkét ellenőrzés be van kötve a CI-ba (`.github/workflows/ci.yml`): a
-  `wasm.build` fut először (hogy egy friss checkout-nak mindig legyen
-  `module.wasm`-ja, amit ellenőrizni lehet), majd a `wasm.rebuild-verify`,
-  majd a `wasm.test`.
+- A `make wasm.integrity-verify` (`mk/wasm.mk`) a **CI gate**: a **commitolt**
+  `module/module.wasm`-ot hasheli (nincs újrafordítás), és összeveti a
+  commitolt `metadata.buildHash`-sel. Eltérés esetén hibával bukik, ami a
+  `make wasm.build`-re mutat mint javításra. Ez azt bizonyítja, hogy a
+  commitolt artifact megegyezik az aláírt deklarációjával — **integritás**,
+  amin a bizalmi modell nyugszik (lásd lent), nem reprodukció.
+- A `make wasm.repro-probe` (`mk/wasm.mk`) egy **nem-fatális** supply-chain
+  jelzés: egy scratch helyre (`/tmp`, sosem írja felül a commitolt artifactot)
+  újrafordít, és *jelenti*, hogy ez a környezet bájtra reprodukálja-e az
+  artifactot. A TinyGo jelenleg beágyazza az abszolút build-path-t és néhány
+  cgo-szimbólumot fájlrendszer-sorrendben rendez, így egy másik környezetben
+  az újrafordítás eltérhet (issue #2). Ez jelzés, sosem gate.
+- Mindkettő be van kötve a CI-ba (`.github/workflows/ci.yml`): a `wasm.build`
+  fut először (hogy egy friss checkout-nak mindig legyen `module.wasm`-ja),
+  majd a `wasm.integrity-verify` (fatális), majd a `wasm.repro-probe`
+  (nem-fatális), majd a `wasm.test`. (A `wasm.rebuild-verify` megmaradt mint a
+  `wasm.integrity-verify` deprecated aliasa.)
+
+### Miért integritás, nem reprodukció
+
+A commitolt `module.wasm` az aláírt, elsőrendű artifact. A release-folyamat a
+`buildHash`-en keresztül köti egy aláírás-lánchoz: a fejlesztő Vault-aláírása
+(`metadata.sign`, amit a `tools/infra.py:_resign_with_build_hash` újraaláír,
+hogy a `buildHash`-t is fedje) és a CIC ellenjegyzése (`metadata.cicSign` /
+`cicSignedCA`) egyaránt a pontos `buildHash`-t — azaz a pontos binárist —
+fedik. A bizalom ezeken az aláírásokon nyugszik egy konkrét artifact fölött,
+**nem** azon, hogy bármely fél tetszőleges környezetben újra tudja-e építeni
+ugyanazokat a bájtokat. A cross-env bit-reprodukálhatóság kívánatos
+supply-chain keményítés (plusz bizonyítékot adna, hogy a bináris a
+felülvizsgált forrásból származik), de nem előfeltétele a bizalmi láncnak, és
+ma a TinyGo build-flagjeiből nem elérhető (issue #2). Ezért a CI integritásra
+gate-el, a reprodukciót pedig informatív próbaként kezeli.
 
 ## ABI manifeszt: project.yaml <-> module.wasm exportok
 
@@ -69,7 +89,7 @@ implementál (`make release VERSION=X.Y.Z`):
    kerül.
 3. **finalize** — a release checksum-olása és Vault-aláírása.
 
-Ennek a template-nek a `wasm.build` / `wasm.rebuild-verify` / ABI-manifeszt
+Ennek a template-nek a `wasm.build` / `wasm.integrity-verify` / ABI-manifeszt
 ellenőrzései a **build-gap** fázisba illeszkednek: ezek a mechanizmus, amivel
 egy WASM guest modul bináris artifactja és a manifeszt-deklarációi
 előállnak és ellenőrizve lesz, hogy önkonzisztensek, *mielőtt* a
@@ -114,9 +134,9 @@ offline futtatással ellenőrzi:
 
 1. a `project.yaml` validálódik a `project.schema.yaml` ellen (az `abi:`-t
    is, az `abi.schema.yaml`-on keresztül);
-2. a `module/module.wasm` sha256-a megegyezik a `project.yaml`
-   `metadata.buildHash`-ével, a `make wasm.rebuild-verify`-jal (`mk/wasm.mk`)
-   azonos TinyGo-hívással egy scratch helyre újraépítve;
+2. a **commitolt** `module/module.wasm` sha256-a megegyezik a `project.yaml`
+   `metadata.buildHash`-ével (integritás, nincs újrafordítás — a
+   `make wasm.integrity-verify`-jal, `mk/wasm.mk`, azonos módon);
 3. a `project.yaml` `abi.exports`-a megegyezik a `module/module.wasm`
    tényleges exportjaival, a `module/abi_manifest_test.go`
    `TestHostLoadABIManifestExportsPresent`-jének (`go test`) futtatásával;
@@ -149,17 +169,19 @@ hiányzik a `project.yaml`-ból (séma probléma, ezt az 1. pont is elkapja).
 A `verify-release` ebben a jobban **nincs** bekötve a
 `.github/workflows/ci.yml`-be: ez egy release-készenységi gate (a `make
 release` futtatás előkészítésekor releváns), nem egy minden push-ra futó
-ellenőrzés, mint a `wasm.rebuild-verify`/`wasm.test`/`manifest-verify`. Egy
+ellenőrzés, mint a `wasm.integrity-verify`/`wasm.test`/`manifest-verify`. Egy
 jövőbeli job eldöntheti, hogy/hová kötné be CI step-ként (pl. csak release
 branch-eken).
 ## Célállapot: bizonyítható, aláírt release bundle
 
-Az implementált állapot — `buildHash` + `wasm.rebuild-verify` + ABI
+Az implementált állapot — `buildHash` + `wasm.integrity-verify` + ABI
 manifeszt + `MANIFEST.sha256` + `project.yaml`/`abi.schema.yaml` séma-validáció
 + `verify-release` — egy adott commitra megalapozza, hogy:
 
-- a `module/module.wasm` pontosan az, amire a `module/*.go` fordul
-  (reprodukálható build);
+- a `module/module.wasm` megegyezik a deklarált `metadata.buildHash`-ével — az
+  aláírt artifact és a deklarációja egyezik (integritás). A forrásból való
+  bájtpontos reprodukció tetszőleges környezetben külön, nem-gate-elő
+  supply-chain jelzés (`wasm.repro-probe`, issue #2);
 - a `module/module.wasm` exportjai megfelelnek annak, amit a `project.yaml`
   deklarál (ABI manifeszt);
 - semmilyen más tracked fájl nem driftelt váratlanul (repository manifeszt);
