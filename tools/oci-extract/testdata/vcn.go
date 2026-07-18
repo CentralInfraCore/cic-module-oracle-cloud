@@ -18,6 +18,24 @@ type CreateVcnDetails struct {
 	FreeformTags map[string]string `mandatory:"false" json:"freeformTags"`
 }
 
+// UpdateVcnDetails is the update projection — the subset a caller may change
+// after creation. Absence of a field here does NOT by itself mean immutable: a
+// field may instead be changed through an action model (see below).
+type UpdateVcnDetails struct {
+	CidrBlocks []string `mandatory:"false" json:"cidrBlocks"`
+
+	DisplayName *string `mandatory:"false" json:"displayName"`
+
+	FreeformTags map[string]string `mandatory:"false" json:"freeformTags"`
+}
+
+// ChangeVcnCompartmentDetails is an action model: compartmentId is not in
+// UpdateVcnDetails, but it is mutable through this action — so the classifier
+// must label compartmentId "action", not "create-only".
+type ChangeVcnCompartmentDetails struct {
+	CompartmentId *string `mandatory:"true" json:"compartmentId"`
+}
+
 // Vcn is the observed state read back from the service.
 type Vcn struct {
 	Id *string `mandatory:"true" json:"id"`
@@ -27,6 +45,8 @@ type Vcn struct {
 	CidrBlocks []string `mandatory:"false" json:"cidrBlocks"`
 
 	DisplayName *string `mandatory:"false" json:"displayName"`
+
+	DnsLabel *string `mandatory:"false" json:"dnsLabel"`
 
 	LifecycleState string `mandatory:"false" json:"lifecycleState"`
 

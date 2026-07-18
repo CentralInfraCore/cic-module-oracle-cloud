@@ -117,30 +117,44 @@ response:
   headers: { etag: { type: string }, opc-request-id: { type: string } }
 ```
 
-## P2.3 — Contract + module type generator
+## P2.3 — Contract + module type generator · in progress
 
 From the registry + model graph, generate:
 
-1. **CIC provider contracts** — the payload schemas (`cic:network:vcn-config`,
-   `…-state`) and the field policy, from comparing `Create`/`Update`/`Read`
-   models:
+1. **Field policy** · **done** (`tools/oci-extract/policy.go`) — comparing
+   `Create`/`Update`/`Read` models per field:
 
    | field | Create | Update | Read | policy |
    |-------|--------|--------|------|--------|
    | displayName | ✓ | ✓ | ✓ | mutable |
    | dnsLabel | ✓ | – | ✓ | create-only |
-   | compartmentId | ✓ | – | ✓ | action (`ChangeVcnCompartment`) |
+   | compartmentId | ✓ | – | ✓ | action (`ChangeVcnCompartmentDetails`) |
    | lifecycleState | – | – | ✓ | output-only |
 
-   A field absent from `UpdateDetails` is **not automatically immutable** — a
-   second pass searches action request models (`Add*`/`Remove*`/`Change*`)
-   before classifying it immutable.
+   The crucial rule — a field absent from `UpdateDetails` is **not
+   automatically immutable** — is implemented: `DeriveFieldPolicy` consults the
+   action models (`Change*`/`Add*`/`Remove*…Details`) before ever calling a
+   field create-only, and names the action that governs it. Classes: `mutable`,
+   `action`, `create-only`, `input-only` (accepted at create, never read back),
+   `output-only`. Tested on a fixture and **validated on the real pinned SDK**:
+   `ResourcePolicy(models, "Vcn")` over the real VCN models classifies 22 fields
+   correctly, including `compartmentId → action (ChangeVcnCompartmentDetails)`.
+   Reproduce:
 
-2. **Module types** — request/response structs in the module's language
+   ```sh
+   go run ./cmd/oci-extract -policy Vcn \
+     "$SDK/core/create_vcn_details.go" "$SDK/core/update_vcn_details.go" \
+     "$SDK/core/vcn.go" "$SDK/core/change_vcn_compartment_details.go"
+   ```
+
+2. **Payload schemas** · todo — emit `cic:network:vcn-config` / `…-state` schemas
+   from the field policy + model type graph.
+
+3. **Module types** · todo — request/response structs in the module's language
    (generated Go or Rust), so the module marshals payloads without the SDK
    runtime.
 
-3. Optionally a **CIC YANG** model (Oracle publishes none for OCI), carrying CIC
+4. Optionally a **CIC YANG** model (Oracle publishes none for OCI), carrying CIC
    extensions the SDK tags cannot express: `create-only`, `immutable`,
    `requires-replacement`, `action-managed`, `provider-computed`.
 

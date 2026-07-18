@@ -28,13 +28,16 @@ func field(t *testing.T, m Model, name string) Field {
 
 func TestExtractsAllStructs(t *testing.T) {
 	m := models(t)
-	for _, name := range []string{"CreateVcnDetails", "Vcn", "CreateVcnRequest", "CreateVcnResponse"} {
+	for _, name := range []string{
+		"CreateVcnDetails", "UpdateVcnDetails", "ChangeVcnCompartmentDetails",
+		"Vcn", "CreateVcnRequest", "CreateVcnResponse",
+	} {
 		if _, ok := m[name]; !ok {
 			t.Errorf("missing model %q", name)
 		}
 	}
-	if len(m) != 4 {
-		t.Errorf("expected 4 models, got %d", len(m))
+	if len(m) != 6 {
+		t.Errorf("expected 6 models, got %d", len(m))
 	}
 }
 
