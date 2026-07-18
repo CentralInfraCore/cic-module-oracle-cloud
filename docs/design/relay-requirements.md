@@ -53,7 +53,9 @@ specific canonicalization stays in the module; the key stays in the airlock.
 
 A concrete interface proposal — the OCI signing profile (which headers, in which
 order), the `sign`/`actuate` split, and an end-to-end `execute` walkthrough — is
-in [specs/relay-sign-send-interface.md](specs/relay-sign-send-interface.md).
+in [specs/relay-sign-send-interface.md](specs/relay-sign-send-interface.md),
+raised as [CIC_Relay#89](https://github.com/CentralInfraCore/CIC_Relay/issues/89)
+(covers R1+R2 together).
 
 Maps to roadmap **P1.2**. This is the item that most needs relay-team input,
 because it touches the actuation/credential model.

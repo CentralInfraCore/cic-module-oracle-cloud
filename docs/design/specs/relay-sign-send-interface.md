@@ -1,8 +1,10 @@
 # Spec — relay sign+send host interface (R1/R2 proposal)
 
-**Piece:** P1.1–P1.4 · **Status:** proposal toward CIC-Relay · **Relay is
-read-only from here** — see [relay-requirements.md](../relay-requirements.md)
-(R1, R2) and [host-functions.md](host-functions.md).
+**Piece:** P1.1–P1.4 · **Status:** raised in CIC-Relay
+([CIC_Relay#89](https://github.com/CentralInfraCore/CIC_Relay/issues/89)) ·
+**Relay is read-only from here** — see
+[relay-requirements.md](../relay-requirements.md) (R1, R2) and
+[host-functions.md](host-functions.md).
 
 This is the concrete interface a provider module needs from the relay to reach
 the network with credentials — the module's half of the contract, stated
