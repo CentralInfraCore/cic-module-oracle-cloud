@@ -22,7 +22,7 @@ downstream is stable until these are.
 
 | ID | Piece | Where | Status | Spec |
 |----|-------|-------|--------|------|
-| P0.1 | `cic:provider` ABI: `validate/observe/plan/execute/poll/invoke/destroy` + envelope | this repo | spec — **blocked** by [#2](https://github.com/CentralInfraCore/cic-module-oracle-cloud/issues/2) (wasm rebuild not reproducible local↔CI; a rebuild is required) | [provider-abi](specs/provider-abi.md) |
+| P0.1 | `cic:provider` ABI: `describe/validate/observe/plan/execute/poll/invoke/destroy` + envelope | this repo | **surface implemented** (`module/provider.go`): `describe` done; `validate` envelope-level (schema-conformance pending P2.3); `plan` noop done, diff scaffold (P2.3); `observe/execute/poll/invoke/destroy` scaffold pending relay R1/R2 | [provider-abi](specs/provider-abi.md) |
 | P0.2 | Capability manifest schema | this repo | **done** | [capability-manifest](specs/capability-manifest.md) |
 | P0.3 | Extend `abi.schema.yaml` with an `imports:` surface | this repo | todo | [provider-abi](specs/provider-abi.md) |
 | P0.4 | Intent/state correspondence + `effective_config` model | this repo | spec | [state-model](specs/state-model.md) |

@@ -4,9 +4,9 @@ Runs five checks against the working tree and prints a PASS/FAIL summary:
 
 1. project.yaml validates against project.schema.yaml (incl. the abi: block,
    abi.schema.yaml).
-2. module/module.wasm's sha256 matches project.yaml's metadata.buildHash, by
-   rebuilding the guest module to a scratch path with the same TinyGo
-   invocation as `make wasm.rebuild-verify` (mk/wasm.mk).
+2. the committed module/module.wasm's sha256 matches project.yaml's
+   metadata.buildHash (integrity, not reproduction — same as
+   `make wasm.integrity-verify`, mk/wasm.mk).
 3. project.yaml's abi.exports match module/module.wasm's actual exports, by
    running module/abi_manifest_test.go's TestHostLoadABIManifestExportsPresent
    (go test).
@@ -29,7 +29,6 @@ import argparse
 import hashlib
 import subprocess  # nosec
 import sys
-import tempfile
 from pathlib import Path
 
 from jsonschema import ValidationError
@@ -70,10 +69,17 @@ def check_schema(project_path, schema_path):
 
 
 def check_build_hash(project_path, module_dir, wasm_out, wasm_target):
-    """2. Rebuild module.wasm to a scratch path and compare sha256 to metadata.buildHash.
+    """2. Verify the committed module.wasm's sha256 == project.yaml metadata.buildHash.
 
-    Same TinyGo invocation as mk/wasm.mk's wasm.rebuild-verify target.
+    Integrity, not reproduction. The committed module.wasm is the signed,
+    first-class artifact: the developer counter-signs it and CIC counter-signs
+    the companion metadata, both bound by buildHash (the anchor the Vault
+    signature covers). A cross-environment rebuild is intentionally NOT performed
+    — it is not achievable from TinyGo's flags alone (issue #2) and is not what
+    the trust chain rests on. This mirrors mk/wasm.mk's wasm.integrity-verify.
+    (module_dir/wasm_target are retained for call-site stability.)
     """
+    del module_dir, wasm_target  # no rebuild — kept for signature stability
     instance = load_yaml(project_path)
     expected = (instance or {}).get("metadata", {}).get("buildHash", "")
     if not expected:
@@ -83,42 +89,28 @@ def check_build_hash(project_path, module_dir, wasm_out, wasm_target):
             "metadata.buildHash is empty in project.yaml.",
         )
 
-    with tempfile.TemporaryDirectory() as scratch_dir:
-        scratch = Path(scratch_dir) / "module.wasm"
-        cmd = [
-            "tinygo",
-            "build",
-            "-o",
-            str(scratch),
-            "-target",
-            wasm_target,
-            "-scheduler=none",
-            ".",
-        ]
-        proc = subprocess.run(
-            cmd, cwd=module_dir, capture_output=True, text=True
-        )  # nosec
-        if proc.returncode != 0:
-            return _print_result(
-                "2. module.wasm buildHash",
-                False,
-                f"tinygo build failed:\n{proc.stderr}",
-            )
-
-        actual = hashlib.sha256(scratch.read_bytes()).hexdigest()
+    artifact = Path(wasm_out)
+    if not artifact.is_file():
+        return _print_result(
+            "2. module.wasm buildHash",
+            False,
+            f"{wasm_out} not found — run 'make wasm.build' first.",
+        )
+    actual = hashlib.sha256(artifact.read_bytes()).hexdigest()
 
     if actual != expected:
         return _print_result(
             "2. module.wasm buildHash",
             False,
-            f"rebuilt sha256:         {actual}\n"
+            f"artifact sha256:        {actual}\n"
             f"project.yaml buildHash: {expected}\n"
+            f"The committed artifact and its declared hash disagree. "
             f"Run 'make wasm.build' to refresh {wasm_out} and metadata.buildHash.",
         )
     return _print_result(
         "2. module.wasm buildHash",
         True,
-        f"rebuilt sha256 == metadata.buildHash ({actual}).",
+        f"artifact sha256 == metadata.buildHash ({actual}).",
     )
 
 

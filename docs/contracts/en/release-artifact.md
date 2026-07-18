@@ -19,17 +19,38 @@ metadata:
   `python -m tools.compiler set-build-hash`, which recomputes the sha256 and
   rewrites `metadata.buildHash` via a stdlib-only regex edit (deliberately
   avoiding a `tools.infra`/`tools.compiler` round trip for this single field).
-- `make wasm.rebuild-verify` (`mk/wasm.mk`) is the **read-only counterpart**:
-  it rebuilds `module/module.wasm` to a scratch path (`/tmp`, never
-  overwriting the committed artifact), computes its sha256, and compares it
-  against the committed `metadata.buildHash`. A mismatch fails with a message
-  pointing at `make wasm.build` as the fix. This is the CI gate that proves
-  the committed `module.wasm` binary is what `module/*.go` actually compiles
-  to — i.e. that the artifact is reproducible from source, not hand-edited or
-  stale.
-- Both checks are wired into CI (`.github/workflows/ci.yml`): `wasm.build`
-  runs first (so a from-scratch checkout always has a `module.wasm` to
-  verify), then `wasm.rebuild-verify`, then `wasm.test`.
+- `make wasm.integrity-verify` (`mk/wasm.mk`) is the **CI gate**: it hashes the
+  **committed** `module/module.wasm` (no rebuild) and compares it against the
+  committed `metadata.buildHash`. A mismatch fails with a message pointing at
+  `make wasm.build` as the fix. This proves the committed artifact matches its
+  signed declaration — **integrity**, which is what the trust model rests on
+  (see below), not reproduction.
+- `make wasm.repro-probe` (`mk/wasm.mk`) is a **non-fatal** supply-chain signal:
+  it rebuilds to a scratch path (`/tmp`, never overwriting the committed
+  artifact) and *reports* whether this environment reproduces the artifact
+  bit-for-bit. TinyGo currently embeds the absolute build path and orders some
+  cgo symbols by filesystem order, so a rebuild in a different environment can
+  differ (issue #2). This is a signal, never a gate.
+- Both are wired into CI (`.github/workflows/ci.yml`): `wasm.build` runs first
+  (so a from-scratch checkout always has a `module.wasm`), then
+  `wasm.integrity-verify` (fatal), then `wasm.repro-probe` (non-fatal), then
+  `wasm.test`. (`wasm.rebuild-verify` remains as a deprecated alias for
+  `wasm.integrity-verify`.)
+
+### Why integrity, not reproduction
+
+The committed `module.wasm` is the signed, first-class artifact. The release
+flow binds it to a signature chain via `buildHash`: the developer's Vault
+signature (`metadata.sign`, re-signed to cover `buildHash` in
+`tools/infra.py:_resign_with_build_hash`) and CIC's counter-signature
+(`metadata.cicSign` / `cicSignedCA`) both cover the exact `buildHash` — i.e. the
+exact binary. Trust rests on those signatures over a specific artifact, **not**
+on any party being able to rebuild the same bytes from source in an arbitrary
+environment. Cross-environment bit-reproducibility is a desirable supply-chain
+hardening (it would additionally prove the binary came from the reviewed
+source), but it is not a precondition of the trust chain, and it is not
+achievable from TinyGo's build flags alone today (issue #2). So CI gates on
+integrity and treats reproduction as an informational probe.
 
 ## ABI manifest: project.yaml <-> module.wasm exports
 
@@ -65,7 +86,7 @@ process (`make release VERSION=X.Y.Z`):
    `module/module.wasm`) are produced and `metadata.buildHash` is set.
 3. **finalize** — checksum and Vault-sign the release.
 
-This template's `wasm.build` / `wasm.rebuild-verify` / ABI-manifest checks
+This template's `wasm.build` / `wasm.integrity-verify` / ABI-manifest checks
 fit into the **build-gap** phase: they are the mechanism by which a WASM
 guest module's binary artifact and its manifest declarations are produced and
 verified to be self-consistent *before* `finalize` checksums and signs the
@@ -108,9 +129,9 @@ offline command that checks:
 
 1. `project.yaml` validates against `project.schema.yaml` (incl. `abi:` via
    `abi.schema.yaml`).
-2. `module/module.wasm`'s sha256 matches `project.yaml`'s
-   `metadata.buildHash`, by rebuilding to a scratch path with the same
-   TinyGo invocation as `make wasm.rebuild-verify` (`mk/wasm.mk`).
+2. the committed `module/module.wasm`'s sha256 matches `project.yaml`'s
+   `metadata.buildHash` (integrity, no rebuild — same as
+   `make wasm.integrity-verify`, `mk/wasm.mk`).
 3. `project.yaml`'s `abi.exports` match `module/module.wasm`'s actual
    exports, by running
    `module/abi_manifest_test.go`'s `TestHostLoadABIManifestExportsPresent`
@@ -144,17 +165,19 @@ caught by check 1).
 
 `verify-release` is **not** wired into `.github/workflows/ci.yml` in this
 job: it is a release-readiness gate (relevant when preparing a `make release`
-run), not a per-push check like `wasm.rebuild-verify`/`wasm.test`/
+run), not a per-push check like `wasm.integrity-verify`/`wasm.test`/
 `manifest-verify`. A future job can decide whether/where to add it as a CI
 step (e.g. only on release branches).
 ## Target state: provable signed release bundle
 
-The implemented state — `buildHash` + `wasm.rebuild-verify` + ABI manifest +
+The implemented state — `buildHash` + `wasm.integrity-verify` + ABI manifest +
 `MANIFEST.sha256` + `project.yaml`/`abi.schema.yaml` schema validation +
 `verify-release` — establishes that, for a given commit:
 
-- `module/module.wasm` is exactly what `module/*.go` compiles to
-  (reproducible build).
+- `module/module.wasm` matches its declared `metadata.buildHash` — the signed
+  artifact and its declaration agree (integrity). Bit-for-bit reproduction from
+  source in an arbitrary environment is a separate, non-gating supply-chain
+  signal (`wasm.repro-probe`, issue #2).
 - `module/module.wasm`'s exports match what `project.yaml` declares (ABI
   manifest).
 - No other tracked file has drifted unexpectedly (repository manifest).

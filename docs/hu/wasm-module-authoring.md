@@ -102,17 +102,24 @@ A `make wasm.test` a `module/module_loadtest_test.go`-t futtatja, amely:
 Ha a `module.wasm` még nem létezik, a teszt skip-elve fut, a `make
 wasm.build`-re mutató üzenettel.
 
-## Reprodukálható build ellenőrzés
+## Artifact integritás ellenőrzés
 
-A `make wasm.rebuild-verify` újraépíti a guest modult egy ideiglenes helyre
-(a builder konténer `/tmp` mappájába — a commitolt `module/module.wasm`-ot
-sosem írja felül), kiszámolja a sha256-ját, és összeveti a `project.yaml`
-`metadata.buildHash` mezőjével. Eltérés esetén vagy a commitolt
-`module.wasm` elavult (valaki módosította a `module/`-t `make wasm.build`
-futtatása nélkül), vagy a TinyGo build nem reprodukálható ebben a
-környezetben — mindkét esetben a parancs nem-nulla exit kóddal hibázik, és a
-`make wasm.build` futtatására hívja fel a figyelmet a két fájl frissítéséhez.
-Ez a CI-ban közvetlenül a `wasm.build` után fut (`.github/workflows/ci.yml`).
+A `make wasm.integrity-verify` a **commitolt** `module/module.wasm`-ot hasheli
+(nincs újrafordítás), és összeveti a `project.yaml` `metadata.buildHash`
+mezőjével. Eltérés esetén a commitolt bináris és a deklarált hash-e nem
+egyezik — valaki módosította a `module/`-t vagy a `project.yaml`-t `make
+wasm.build` futtatása nélkül —, és a parancs nem-nulla exit kóddal hibázik, a
+`make wasm.build`-re hívva fel a figyelmet. Ez a CI gate, közvetlenül a
+`wasm.build` után (`.github/workflows/ci.yml`); azt igazolja, hogy az artifact
+megegyezik az aláírt deklarációjával (**integritás**) — amin a bizalmi modell
+nyugszik —, nem azt, hogy bárki újra tudja építeni ugyanazokat a bájtokat.
+
+A `make wasm.repro-probe` a nem-fatális párja: egy ideiglenes helyre (`/tmp`,
+sosem írja felül a commitolt artifactot) újrafordít, és *jelenti*, hogy ez a
+környezet bájtra reprodukálja-e a binárist. A TinyGo jelenleg beágyazza a
+build-path-t és néhány cgo-szimbólumot fájlrendszer-sorrendben rendez, így egy
+másik környezetben az újrafordítás eltérhet (issue #2). Ez supply-chain
+jelzés, sosem gate, és a `wasm.integrity-verify` után fut a CI-ban.
 
 ## Go quality gate
 

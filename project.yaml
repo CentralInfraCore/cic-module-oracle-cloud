@@ -38,7 +38,7 @@ metadata:
   # the build-gap between the prepare and finalize release phases. The
   # finalization phase (tools/infra.py: _resign_with_build_hash) requires
   # this to be non-empty and re-signs metadata.sign to cover it.
-  buildHash: cb069c11921ff1f8fe448a825c92683289b5f1a92db94e0cd910c1815ceff58b
+  buildHash: 1d7e1bf9605db6f914cfc71332a0d825b343ab072aa0acd5be37bb268ba4de7a
   cicSign: 'TBD'
   cicSignedCA:
     certificate: "TBD — filled by the release process with the CIC Root CA certificate"
@@ -67,12 +67,18 @@ abi:
     - allocate
     - deallocate
     - Call
-  # op-strings dispatched by module/abi.go's Call (KB c689).
+  # cic:provider ABI op-strings dispatched by module/abi.go's Call
+  # (docs/design/specs/provider-abi.md). describe/validate/plan are host-boundary
+  # "none"; observe/execute/poll/invoke/destroy are "sign+send".
   operations:
-    - init
-    - process
-    - get
-    - notify
+    - describe
+    - validate
+    - observe
+    - plan
+    - execute
+    - poll
+    - invoke
+    - destroy
 # capability_manifest declares what this module needs from the host; the host
 # enforces exactly this (relay-requirements.md R3). This is the OCI provisioner's
 # target reach — egress to OCI's REST endpoints and a sign-only OCI key handle.

@@ -1,0 +1,339 @@
+// Package main — provider.go is the cic:provider ABI domain layer
+// (docs/design/specs/provider-abi.md). It has no build tag so the same code is
+// compiled into the TinyGo/wasip1 guest (dispatched by abi.go) AND exercised by
+// host-side `go test` (provider_test.go) without going through wasm.
+//
+// Status discipline (three-level, see CIC/CLAUDE.md):
+//   - describe          — implemented: deterministic module manifest.
+//   - validate          — implemented at the ENVELOPE level; schema-conformance
+//     of the payload is scaffold (needs the generated OCI
+//     payload schemas, roadmap P2.3). validate reports what
+//     it actually checked in validation-result.checked.
+//   - plan              — implemented for the trivial noop (desired == observed);
+//     real diff→provider_operations is scaffold (P2.3).
+//   - observe/execute/poll/invoke/destroy — scaffold: these are sign+send ops
+//     that require the relay trust-flow host capability
+//     (relay-requirements.md R1/R2), not yet available. They
+//     return a typed provider-error naming the missing
+//     precondition — never a faked success.
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+)
+
+// abiVersion is the provider interface this module implements.
+const abiVersion = "cic:provider@0.1.0"
+
+// providerName is the CIC provider identity this module actuates.
+const providerName = "oracle-cloud"
+
+// providerOps is the fixed op set of the cic:provider ABI, in spec order. The
+// dispatcher (abi.go) routes exactly these; project.yaml's abi.operations must
+// match. describe/validate/plan are host-boundary "none"; the rest are
+// "sign+send" (provider-abi.md, "Operation meanings").
+var providerOps = []string{
+	"describe", "validate", "observe", "plan",
+	"execute", "poll", "invoke", "destroy",
+}
+
+// ---- schema-payload envelope (provider-abi.md, "Envelope") ----
+
+// schemaPayload crosses the boundary as a schema-tagged, hashed payload. Resource
+// data never changes the ABI; it travels here. schema_hash is the hex sha256 of
+// the schema the payload validates against; data is the instance, encoded per
+// encoding. For canonical-json, data is the raw JSON instance.
+type schemaPayload struct {
+	SchemaID      string          `json:"schema_id"`
+	SchemaVersion string          `json:"schema_version"`
+	SchemaHash    string          `json:"schema_hash"`
+	Encoding      string          `json:"encoding"`
+	Data          json.RawMessage `json:"data"`
+}
+
+const (
+	encCanonicalJSON = "canonical-json"
+	encCBOR          = "cbor"
+)
+
+// ---- provider-error (provider-abi.md, "Error model") ----
+
+// providerError is a CIC-canonical error. class drives host behaviour;
+// provider_code preserves the provider-native code verbatim for evidence.
+type providerError struct {
+	Class        string `json:"class"`
+	ProviderCode string `json:"provider_code,omitempty"`
+	Retryable    bool   `json:"retryable"`
+	RequestID    string `json:"request_id,omitempty"`
+	FieldPath    string `json:"field_path,omitempty"`
+	Message      string `json:"message"`
+}
+
+// Error classes (provider-abi.md). class is CIC-canonical, not provider-native.
+const (
+	classSchema     = "schema"
+	classValidation = "validation"
+	classConflict   = "conflict"
+	classNotFound   = "not-found"
+	classPermission = "permission"
+	classTransport  = "transport"
+	classProvider   = "provider"
+	classInternal   = "internal"
+)
+
+// ---- result discriminator ----
+//
+// Each op returns result<T, provider-error>. On the {data,error} transport wire
+// (envelope.go), a DOMAIN error is an expected outcome of a SUCCESSFUL call, so
+// it travels in data as the error arm of this discriminator — not in the
+// transport error slot, which is reserved for malformed input / internal panics.
+
+type providerResult struct {
+	Status string          `json:"status"` // "ok" | "error"
+	Result json.RawMessage `json:"result,omitempty"`
+	Error  *providerError  `json:"error,omitempty"`
+}
+
+func okResult(v interface{}) ([]byte, error) {
+	inner, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(providerResult{Status: "ok", Result: json.RawMessage(inner)})
+}
+
+func errResult(pe *providerError) ([]byte, error) {
+	return json.Marshal(providerResult{Status: "error", Error: pe})
+}
+
+// hostSignSendUnavailable is the scaffold error for every sign+send op: the
+// relay trust-flow host capability (relay-requirements.md R1/R2) is not wired,
+// so the op cannot actuate. Typed transport-class, non-retryable, with a
+// provider_code a reviewer can grep for.
+func hostSignSendUnavailable(op string) *providerError {
+	return &providerError{
+		Class:        classTransport,
+		ProviderCode: "HOST_SIGN_SEND_UNAVAILABLE",
+		Retryable:    false,
+		Message: op + ": requires the relay trust-flow sign+send host capability " +
+			"(relay-requirements.md R1/R2), not yet available. This module declares " +
+			"the reach in project.yaml capability_manifest; the host does not expose it yet.",
+	}
+}
+
+// ---- describe (implemented) ----
+
+type moduleManifest struct {
+	Name                 string   `json:"name"`
+	Version              string   `json:"version"`
+	ABIVersion           string   `json:"abi_version"`
+	Provider             string   `json:"provider"`
+	ResourceKinds        []string `json:"resource_kinds"`
+	Operations           []string `json:"operations"`
+	RequiredCapabilities capReq   `json:"required_capabilities"`
+}
+
+// capReq is a summary of project.yaml's capability_manifest reach, so a host can
+// read the module's declared boundary from describe() without parsing the repo.
+type capReq struct {
+	EgressHosts []string `json:"egress_hosts"`
+	SecretOps   []string `json:"secret_ops"`
+}
+
+// Describe returns the module manifest: identity, supported resource kinds,
+// the fixed op set, and the declared capability reach. Pure, deterministic.
+func Describe(auth, data []byte) ([]byte, error) {
+	m := moduleManifest{
+		Name:       "cic-module-oracle-cloud",
+		Version:    "1.0.0",
+		ABIVersion: abiVersion,
+		Provider:   providerName,
+		// The first resource kind targeted (roadmap: core/network). More are
+		// added as their payload schemas are generated (P2.3).
+		ResourceKinds: []string{"cic:network:vcn"},
+		Operations:    providerOps,
+		RequiredCapabilities: capReq{
+			EgressHosts: []string{"*.oraclecloud.com"},
+			SecretOps:   []string{"oci/*:sign"},
+		},
+	}
+	return okResult(m)
+}
+
+// ---- validate (envelope-level implemented; schema-conformance scaffold) ----
+
+type validationRequest struct {
+	Kind   string        `json:"kind"`
+	Intent schemaPayload `json:"intent"`
+}
+
+type validationResult struct {
+	Admissible bool            `json:"admissible"`
+	Checked    []string        `json:"checked"` // what was actually verified
+	Errors     []providerError `json:"errors,omitempty"`
+}
+
+// Validate checks the intent envelope for well-formedness. It does NOT yet check
+// the payload against its schema — that needs the generated OCI payload schemas
+// (roadmap P2.3) — and it says so via validation-result.checked, so a caller is
+// never misled into thinking schema-conformance was verified. Pure.
+func Validate(auth, data []byte) ([]byte, error) {
+	var req validationRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return errResult(&providerError{
+			Class: classValidation, Message: "validation-request is not valid JSON: " + err.Error(),
+		})
+	}
+
+	var errs []providerError
+	if req.Kind == "" {
+		errs = append(errs, providerError{
+			Class: classValidation, FieldPath: "kind", Message: "kind is required",
+		})
+	}
+	errs = append(errs, checkEnvelope("intent", req.Intent)...)
+
+	res := validationResult{
+		Admissible: len(errs) == 0,
+		// Honest about scope: envelope structure only. Schema-conformance is
+		// added once P2.3 generates the payload schemas.
+		Checked: []string{"envelope.well-formed"},
+		Errors:  errs,
+	}
+	return okResult(res)
+}
+
+// checkEnvelope validates a schema-payload's structural contract (provider-abi.md
+// "Envelope"): required tags present, a known encoding, and — for canonical-json
+// — a decodable data instance. Returns one providerError per problem, field_path
+// rooted at field.
+func checkEnvelope(field string, p schemaPayload) []providerError {
+	var errs []providerError
+	add := func(path, msg string) {
+		errs = append(errs, providerError{Class: classSchema, FieldPath: field + "." + path, Message: msg})
+	}
+	if p.SchemaID == "" {
+		add("schema_id", "schema_id is required")
+	}
+	if p.SchemaVersion == "" {
+		add("schema_version", "schema_version is required")
+	}
+	if _, err := hex.DecodeString(p.SchemaHash); p.SchemaHash == "" || err != nil {
+		add("schema_hash", "schema_hash must be a hex sha256")
+	}
+	switch p.Encoding {
+	case encCanonicalJSON:
+		if len(p.Data) == 0 || !json.Valid(p.Data) {
+			add("data", "data must be a valid JSON instance for canonical-json encoding")
+		}
+	case encCBOR:
+		if len(p.Data) == 0 {
+			add("data", "data is required for cbor encoding")
+		}
+	default:
+		add("encoding", "encoding must be canonical-json or cbor")
+	}
+	return errs
+}
+
+// ---- plan (noop implemented; diff scaffold) ----
+
+type planRequest struct {
+	Kind     string        `json:"kind"`
+	Desired  schemaPayload `json:"desired"`
+	Observed schemaPayload `json:"observed"`
+}
+
+type executionPlan struct {
+	PlanID    string   `json:"plan_id"`   // sha256:... over the canonical plan inputs
+	Operation string   `json:"operation"` // create|update|replace|action|noop
+	Notes     []string `json:"notes,omitempty"`
+}
+
+// Plan produces an execution plan from desired + observed. This increment
+// computes the trivial, fully-decidable case — desired == observed → noop — with
+// a real, hashable plan_id. Any non-noop diff needs the OCI operation registry
+// (roadmap P2.3) to map fields to provider_operations, so it returns a typed
+// scaffold error rather than a fabricated plan. Pure, no mutation.
+func Plan(auth, data []byte) ([]byte, error) {
+	var req planRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return errResult(&providerError{
+			Class: classValidation, Message: "plan-request is not valid JSON: " + err.Error(),
+		})
+	}
+	if envErrs := checkEnvelope("desired", req.Desired); len(envErrs) > 0 {
+		return errResult(&envErrs[0])
+	}
+	if envErrs := checkEnvelope("observed", req.Observed); len(envErrs) > 0 {
+		return errResult(&envErrs[0])
+	}
+
+	if canonicalEqual(req.Desired.Data, req.Observed.Data) {
+		plan := executionPlan{
+			PlanID:    "sha256:" + planHash(req.Kind, req.Desired, req.Observed),
+			Operation: "noop",
+			Notes:     []string{"desired == observed; no provider operations"},
+		}
+		return okResult(plan)
+	}
+
+	return errResult(&providerError{
+		Class:        classInternal,
+		ProviderCode: "PLAN_DIFF_UNAVAILABLE",
+		Retryable:    false,
+		Message: "plan: a non-noop diff requires the generated OCI operation registry " +
+			"(roadmap P2.2/P2.3) to map fields to provider_operations; not yet available.",
+	})
+}
+
+// planHash is a deterministic hash over the plan inputs, so a plan is identifiable
+// and signable (provider-abi.md: plan_id is hashable).
+func planHash(kind string, desired, observed schemaPayload) string {
+	h := sha256.New()
+	h.Write([]byte(kind))
+	h.Write([]byte(desired.SchemaID))
+	h.Write([]byte(desired.SchemaHash))
+	h.Write([]byte(desired.Data))
+	h.Write([]byte(observed.SchemaHash))
+	h.Write([]byte(observed.Data))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// canonicalEqual compares two JSON instances structurally (key order and
+// insignificant whitespace ignored), by re-marshalling through Go's map/slice
+// model. Adequate for the noop decision on canonical-json payloads.
+func canonicalEqual(a, b json.RawMessage) bool {
+	na, err := reencode(a)
+	if err != nil {
+		return false
+	}
+	nb, err := reencode(b)
+	if err != nil {
+		return false
+	}
+	return string(na) == string(nb)
+}
+
+func reencode(raw json.RawMessage) ([]byte, error) {
+	var v interface{}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, err
+	}
+	return json.Marshal(v)
+}
+
+// ---- sign+send ops (scaffold — host capability not yet available) ----
+
+// Observe/Execute/Poll/Invoke/Destroy all require the relay trust-flow sign+send
+// host capability (relay-requirements.md R1/R2). Until the host exposes it, each
+// returns the typed hostSignSendUnavailable error — an honest scaffold, not a
+// faked success.
+
+func Observe(auth, data []byte) ([]byte, error) { return errResult(hostSignSendUnavailable("observe")) }
+func Execute(auth, data []byte) ([]byte, error) { return errResult(hostSignSendUnavailable("execute")) }
+func Poll(auth, data []byte) ([]byte, error)    { return errResult(hostSignSendUnavailable("poll")) }
+func Invoke(auth, data []byte) ([]byte, error)  { return errResult(hostSignSendUnavailable("invoke")) }
+func Destroy(auth, data []byte) ([]byte, error) { return errResult(hostSignSendUnavailable("destroy")) }

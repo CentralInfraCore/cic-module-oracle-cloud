@@ -94,7 +94,8 @@ See the [Developer Workflow](docs/en/workflow.md) for day-to-day development.
 ## Makefile Commands
 
 - `make wasm.build` — build `module/module.wasm` with TinyGo and compute its `buildHash`.
-- `make wasm.rebuild-verify` — rebuild to a scratch path and verify sha256 matches `project.yaml`'s `metadata.buildHash`.
+- `make wasm.integrity-verify` — verify the committed `module.wasm`'s sha256 matches `project.yaml`'s `metadata.buildHash` (integrity gate, no rebuild).
+- `make wasm.repro-probe` — rebuild to a scratch path and *report* bit-reproducibility (non-fatal supply-chain signal, issue #2).
 - `make wasm.test` — host-load `module.wasm` against the relay cabinet ABI (wazero).
 - `make check` — all code-quality checks (lint, format, typecheck).
 - `make golang.quality` — Go quality gate (fmt/vet/lint/vuln) for `module/`.
