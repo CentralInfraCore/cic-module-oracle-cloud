@@ -115,6 +115,24 @@
     "x-cic-resource": "Subnet",
     "x-cic-schema-version": "v0.1.0"
   },
+  "operations": {
+    "ChangeSubnetCompartment": {
+      "method": "POST",
+      "path": "/subnets/{subnetId}/actions/changeCompartment"
+    },
+    "CreateSubnet": {
+      "method": "POST",
+      "path": "/subnets"
+    },
+    "DeleteSubnet": {
+      "method": "DELETE",
+      "path": "/subnets/{subnetId}"
+    },
+    "UpdateSubnet": {
+      "method": "PUT",
+      "path": "/subnets/{subnetId}"
+    }
+  },
   "state": {
     "$id": "cic:network:subnet-state",
     "$schema": "http://json-schema.org/draft-07/schema#",

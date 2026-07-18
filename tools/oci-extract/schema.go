@@ -151,6 +151,31 @@ func typeToSchema(goType string) map[string]interface{} {
 	}
 }
 
+// ResourceOperationMap returns the HTTP method+path for the operations a plan
+// references for this resource: Create/Update/Delete<Resource> plus each
+// action-managed field's operation (x-cic-action minus "Details"). Keyed by
+// operation name, so the module can attach the concrete HTTP call to each
+// provider_operation without embedding the whole registry.
+func ResourceOperationMap(operations []Operation, resource string, policies []FieldPolicy) map[string]map[string]string {
+	need := map[string]bool{
+		"Create" + resource: true,
+		"Update" + resource: true,
+		"Delete" + resource: true,
+	}
+	for _, p := range policies {
+		if p.Policy == PolicyAction && p.Action != "" {
+			need[strings.TrimSuffix(p.Action, "Details")] = true
+		}
+	}
+	out := map[string]map[string]string{}
+	for _, op := range operations {
+		if need[op.Name] {
+			out[op.Name] = map[string]string{"method": op.HTTPMethod, "path": op.HTTPPath}
+		}
+	}
+	return out
+}
+
 // actionModels returns the Change*/Add*/Remove*…Details models that mention the
 // resource (the action-managed mutation surface).
 func actionModels(models []Model, resource string) []Model {

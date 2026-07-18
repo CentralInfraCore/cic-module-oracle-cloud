@@ -141,9 +141,13 @@ func TestPlanProviderOperations(t *testing.T) {
 		return names
 	}
 
-	// mutable change -> UpdateVcn
-	if got := ops(planVcn(t, `{"displayName":"new"}`, `{"displayName":"old"}`)); len(got) != 1 || got[0] != "UpdateVcn" {
+	// mutable change -> UpdateVcn, with its concrete HTTP method+path.
+	p := planVcn(t, `{"displayName":"new"}`, `{"displayName":"old"}`)
+	if got := ops(p); len(got) != 1 || got[0] != "UpdateVcn" {
 		t.Errorf("displayName change: provider_operations = %v, want [UpdateVcn]", got)
+	}
+	if po := p.ProviderOperations[0]; po.Method != "PUT" || po.Path != "/vcns/{vcnId}" {
+		t.Errorf("UpdateVcn HTTP = %s %s, want PUT /vcns/{vcnId}", po.Method, po.Path)
 	}
 	// action-managed change -> ChangeVcnCompartment
 	if got := ops(planVcn(t, `{"compartmentId":"a"}`, `{"compartmentId":"b"}`)); len(got) != 1 || got[0] != "ChangeVcnCompartment" {

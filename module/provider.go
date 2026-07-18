@@ -351,26 +351,36 @@ type executionPlan struct {
 }
 
 // providerOperation is a concrete OCI operation the plan will run (P2.2 registry
-// names). A plan carrying these is reviewable and signable before any mutation
-// (provider-abi.md: plan/execute split).
+// names + HTTP method/path). A plan carrying these is reviewable and signable
+// before any mutation (provider-abi.md: plan/execute split).
 type providerOperation struct {
 	Operation string `json:"operation"` // e.g. UpdateVcn, ChangeVcnCompartment
+	Method    string `json:"method,omitempty"`
+	Path      string `json:"path,omitempty"`
 	Reason    string `json:"reason,omitempty"`
 }
 
 // planProviderOps maps the classified operation + changed fields to the concrete
 // OCI operations, by the SDK naming convention (Create/Update/Delete<Resource>)
-// and each action field's own operation (x-cic-action). A replace supersedes
-// everything with Delete+Create; otherwise a single Update carries the mutable
-// changes and each action field contributes its own operation.
+// and each action field's own operation (x-cic-action), attaching each one's HTTP
+// method+path from the embedded registry. A replace supersedes everything with
+// Delete+Create; otherwise a single Update carries the mutable changes and each
+// action field contributes its own operation.
 func planProviderOps(c resourceContract, op string, changed []string) []providerOperation {
+	mk := func(name, reason string) providerOperation {
+		po := providerOperation{Operation: name, Reason: reason}
+		if h, ok := c.operations[name]; ok {
+			po.Method, po.Path = h.method, h.path
+		}
+		return po
+	}
 	switch op {
 	case "noop":
 		return nil
 	case "replace":
 		return []providerOperation{
-			{Operation: "Delete" + c.resource, Reason: "immutable field change requires replacement"},
-			{Operation: "Create" + c.resource, Reason: "re-create with the desired configuration"},
+			mk("Delete"+c.resource, "immutable field change requires replacement"),
+			mk("Create"+c.resource, "re-create with the desired configuration"),
 		}
 	}
 	var ops []providerOperation
@@ -382,12 +392,12 @@ func planProviderOps(c resourceContract, op string, changed []string) []provider
 			hasUpdate = true
 		case "action-managed":
 			if fd.action != "" {
-				ops = append(ops, providerOperation{Operation: fd.action, Reason: "field " + name + " changed"})
+				ops = append(ops, mk(fd.action, "field "+name+" changed"))
 			}
 		}
 	}
 	if hasUpdate {
-		ops = append([]providerOperation{{Operation: "Update" + c.resource, Reason: "mutable fields changed"}}, ops...)
+		ops = append([]providerOperation{mk("Update"+c.resource, "mutable fields changed")}, ops...)
 	}
 	return ops
 }

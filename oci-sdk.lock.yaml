@@ -25,4 +25,4 @@ provider_dependency:
 
   # sha256 of the normalized operation registry the extractor produces from this
   # exact source. Filled by P2.2; a bump that changes it triggers the P2.4 gate.
-  extracted_schema_hash: "sha256:359a1f0f0a24df676a1b639581881fcd55136c5021614a5f8f368fccd0ceef96"
+  extracted_schema_hash: "sha256:bf8cbcd0a145997805363729434e213afff6f12ca73207b11695c1702ea49a11"

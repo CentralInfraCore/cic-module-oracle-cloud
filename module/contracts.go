@@ -32,12 +32,19 @@ type fieldDesc struct {
 	action   string // operation name for action-managed fields, e.g. ChangeVcnCompartment
 }
 
+// httpOp is one operation's HTTP method and path (P2.2 registry).
+type httpOp struct {
+	method string
+	path   string
+}
+
 // resourceContract is the settable (config) surface of one resource kind.
 type resourceContract struct {
-	kind     string
-	resource string // SDK resource name (Vcn), for constructing operation names
-	required []string
-	fields   map[string]fieldDesc
+	kind       string
+	resource   string // SDK resource name (Vcn), for constructing operation names
+	required   []string
+	fields     map[string]fieldDesc
+	operations map[string]httpOp // operation name -> HTTP method+path
 }
 
 var (
@@ -67,6 +74,10 @@ func resourceContracts() map[string]resourceContract {
 					Action string `json:"x-cic-action"`
 				} `json:"properties"`
 			} `json:"config"`
+			Operations map[string]struct {
+				Method string `json:"method"`
+				Path   string `json:"path"`
+			} `json:"operations"`
 		}
 		if err := json.Unmarshal(raw, &bundle); err != nil || bundle.Config.ID == "" {
 			continue
@@ -78,7 +89,14 @@ func resourceContracts() map[string]resourceContract {
 			// the operation name drops the "Details" suffix.
 			fields[name] = fieldDesc{policy: p.Policy, jsonType: p.Type, action: strings.TrimSuffix(p.Action, "Details")}
 		}
-		contractCache[kind] = resourceContract{kind: kind, resource: bundle.Config.Resource, required: bundle.Config.Required, fields: fields}
+		ops := make(map[string]httpOp, len(bundle.Operations))
+		for name, o := range bundle.Operations {
+			ops[name] = httpOp{method: o.Method, path: o.Path}
+		}
+		contractCache[kind] = resourceContract{
+			kind: kind, resource: bundle.Config.Resource,
+			required: bundle.Config.Required, fields: fields, operations: ops,
+		}
 	}
 	return contractCache
 }
