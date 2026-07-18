@@ -93,6 +93,11 @@ with the caller's own auth header), distinct from today's Bearer trust-flow. How
 the relay chooses to expose that — extend `run_flow`, or a separate signing +
 HTTP host module — is a relay decision. We state the requirement, not the design.
 
+The concrete interface proposal — the `sign`/`actuate` host functions, their JSON
+wire contracts, the OCI signing profile (header set + order), and the
+capability/audit bindings — is in
+[relay-sign-send-interface.md](relay-sign-send-interface.md).
+
 ## Capability boundary properties we rely on (already present)
 
 - **Egress allowlist** — `EgressPolicy` bounds outbound hosts; a denied host is
