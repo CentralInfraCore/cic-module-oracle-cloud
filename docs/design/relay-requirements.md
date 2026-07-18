@@ -27,7 +27,9 @@ any branch. The `HostSetupFn` on `main` registers only `makeGitHostSetupFn`.
 
 **Ask.** A wazero host module, following the `git` pattern, that lets a guest
 drive the trust-flow (or a capability derived from it). Bigger than wrapping a
-crate — it exposes a whole custody flow.
+crate — it exposes a whole custody flow. A concrete interface proposal (the
+`sign`/`actuate` host functions and wire contracts) is in
+[specs/relay-sign-send-interface.md](specs/relay-sign-send-interface.md).
 
 Maps to roadmap **P1.1 / P1.4**.
 
@@ -48,6 +50,10 @@ with a scoped key (via `vault-adapter` transit), return the signature, then
 actuate egress-policed HTTP carrying the caller's own `Authorization: Signature`
 header — i.e. actuation that does **not** force the Bearer step. The provider-
 specific canonicalization stays in the module; the key stays in the airlock.
+
+A concrete interface proposal — the OCI signing profile (which headers, in which
+order), the `sign`/`actuate` split, and an end-to-end `execute` walkthrough — is
+in [specs/relay-sign-send-interface.md](specs/relay-sign-send-interface.md).
 
 Maps to roadmap **P1.2**. This is the item that most needs relay-team input,
 because it touches the actuation/credential model.
