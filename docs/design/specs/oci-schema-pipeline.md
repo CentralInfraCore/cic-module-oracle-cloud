@@ -147,8 +147,24 @@ From the registry + model graph, generate:
      "$SDK/core/vcn.go" "$SDK/core/change_vcn_compartment_details.go"
    ```
 
-2. **Payload schemas** · todo — emit `cic:network:vcn-config` / `…-state` schemas
-   from the field policy + model type graph.
+2. **Payload schemas** · **done** (`tools/oci-extract/schema.go`) —
+   `ResourceSchemas` emits the `<ns>-config` (intent: the settable fields, with
+   `required` = the create model's mandatory fields) and `<ns>-state` (observed:
+   every read-back field) JSON schemas. Each property carries an `x-cic-policy`
+   annotation (`mutable`/`create-only`/`action-managed`/`input-only`/
+   `provider-computed`) and, for action-managed fields, `x-cic-action`; Go types
+   map to JSON-Schema types, with unmapped named types flagged `x-cic-go-type`
+   rather than guessed. Tested on the fixture and **validated on the real pinned
+   SDK**: `cic:network:vcn-config` (13 settable props, `required:[compartmentId]`)
+   and `cic:network:vcn-state` (19 props) are both valid draft-07 schemas
+   (cross-checked with the `jsonschema` the module tooling uses), a sample
+   instance validates, and missing-`required` is rejected. Reproduce:
+
+   ```sh
+   go run ./cmd/oci-extract -schema Vcn -ns cic:network:vcn \
+     "$SDK/core/create_vcn_details.go" "$SDK/core/update_vcn_details.go" \
+     "$SDK/core/vcn.go" "$SDK/core/change_vcn_compartment_details.go"
+   ```
 
 3. **Module types** · todo — request/response structs in the module's language
    (generated Go or Rust), so the module marshals payloads without the SDK
