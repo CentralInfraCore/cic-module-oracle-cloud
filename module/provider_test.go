@@ -7,6 +7,7 @@ package main
 // these functions compile into this host test binary as well as the guest.
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"testing"
 )
@@ -223,6 +224,61 @@ func TestPlanSubnet(t *testing.T) {
 	}
 }
 
+// TestObserve drives observe against injected cic-flow mocks (host build): sign
+// returns a signature, actuate returns a canned VCN read. It checks that
+// effective_config is the config-surface projection (settable fields only), that
+// raw state keeps everything, and that the revision (etag) is surfaced.
+func TestObserve(t *testing.T) {
+	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
+	testCallHostActuate = func(req []byte) ([]byte, error) {
+		vcn := `{"id":"ocid1.vcn..x","compartmentId":"ocid1.compartment..c","displayName":"prod","dnsLabel":"prod","lifecycleState":"AVAILABLE","cidrBlocks":["10.0.0.0/16"],"timeCreated":"2026-07-19T00:00:00Z"}`
+		out, _ := json.Marshal(map[string]interface{}{
+			"status":      200,
+			"headers":     map[string]string{"etag": "etag-9", "opc-request-id": "req-9"},
+			"body_base64": base64.StdEncoding.EncodeToString([]byte(vcn)),
+		})
+		return out, nil
+	}
+	defer func() { testCallHostSign = nil; testCallHostActuate = nil }()
+
+	req, _ := json.Marshal(observeRequest{
+		Kind:    "cic:network:vcn",
+		Binding: execBinding{Host: "iaas.eu-frankfurt-1.oraclecloud.com", KeyID: "t/u/f", ResourceID: "ocid1.vcn..x"},
+	})
+	out, err := Observe(nil, req)
+	if err != nil {
+		t.Fatalf("Observe transport error: %v", err)
+	}
+	res := decodeResult(t, out)
+	if res.Status != "ok" {
+		t.Fatalf("observe status = %q, want ok (raw: %s)", res.Status, out)
+	}
+	var obs observation
+	if err := json.Unmarshal(res.Result, &obs); err != nil {
+		t.Fatalf("observation decode: %v", err)
+	}
+
+	// effective_config is the settable surface only.
+	for _, f := range []string{"displayName", "compartmentId", "dnsLabel", "cidrBlocks"} {
+		if _, ok := obs.EffectiveConfig[f]; !ok {
+			t.Errorf("effective_config missing settable field %q", f)
+		}
+	}
+	// provider-computed / output-only fields must NOT be in effective_config.
+	for _, f := range []string{"id", "lifecycleState", "timeCreated"} {
+		if _, ok := obs.EffectiveConfig[f]; ok {
+			t.Errorf("effective_config must not include output-only field %q", f)
+		}
+		// ...but raw state keeps them.
+		if _, ok := obs.State[f]; !ok {
+			t.Errorf("state missing %q", f)
+		}
+	}
+	if obs.ProviderMetadata.Etag != "etag-9" || obs.ProviderMetadata.ResourceID != "ocid1.vcn..x" {
+		t.Errorf("provider_metadata = %+v, want etag-9 / ocid1.vcn..x", obs.ProviderMetadata)
+	}
+}
+
 func hasFieldError(errs []providerError, path string) bool {
 	for _, e := range errs {
 		if e.FieldPath == path {
@@ -319,8 +375,7 @@ func TestSignSendOpsAreScaffold(t *testing.T) {
 		name string
 		fn   func(a, d []byte) ([]byte, error)
 	}{
-		{"observe", Observe}, {"poll", Poll},
-		{"invoke", Invoke}, {"destroy", Destroy},
+		{"poll", Poll}, {"invoke", Invoke}, {"destroy", Destroy},
 	} {
 		t.Run(h.name, func(t *testing.T) {
 			out, err := h.fn(nil, []byte("{}"))

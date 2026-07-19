@@ -120,6 +120,10 @@
       "method": "DELETE",
       "path": "/vcns/{vcnId}"
     },
+    "GetVcn": {
+      "method": "GET",
+      "path": "/vcns/{vcnId}"
+    },
     "UpdateVcn": {
       "method": "PUT",
       "path": "/vcns/{vcnId}"

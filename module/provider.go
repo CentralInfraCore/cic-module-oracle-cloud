@@ -4,18 +4,17 @@
 // host-side `go test` (provider_test.go) without going through wasm.
 //
 // Status discipline (three-level, see CIC/CLAUDE.md):
-//   - describe          — implemented: deterministic module manifest.
-//   - validate          — implemented at the ENVELOPE level; schema-conformance
-//     of the payload is scaffold (needs the generated OCI
-//     payload schemas, roadmap P2.3). validate reports what
-//     it actually checked in validation-result.checked.
-//   - plan              — implemented for the trivial noop (desired == observed);
-//     real diff→provider_operations is scaffold (P2.3).
-//   - observe/execute/poll/invoke/destroy — scaffold: these are sign+send ops
-//     that require the relay trust-flow host capability
-//     (relay-requirements.md R1/R2), not yet available. They
-//     return a typed provider-error naming the missing
-//     precondition — never a faked success.
+//   - describe  — implemented: deterministic module manifest.
+//   - validate  — implemented: schema-conformance against the embedded generated
+//     contract (required/unknown/type); reports validation-result.checked.
+//   - plan      — implemented: real diff → update/replace/action/noop with
+//     concrete provider_operations (HTTP method+path).
+//   - execute   — implemented: sign-then-send OCI actuation via the relay
+//     cic-flow host module (R1/R2, CIC_Relay#91).
+//   - observe   — implemented: signed GET → raw state + effective_config
+//     projection + revision (etag).
+//   - poll/invoke/destroy — scaffold: sign+send ops buildable on the same
+//     cic-flow pattern; return a typed provider-error until wired.
 package main
 
 import (
@@ -574,10 +573,93 @@ func reencode(raw json.RawMessage) ([]byte, error) {
 // returns the typed hostSignSendUnavailable error — an honest scaffold, not a
 // faked success.
 
-func Observe(auth, data []byte) ([]byte, error) { return errResult(hostSignSendUnavailable("observe")) }
 func Poll(auth, data []byte) ([]byte, error)    { return errResult(hostSignSendUnavailable("poll")) }
 func Invoke(auth, data []byte) ([]byte, error)  { return errResult(hostSignSendUnavailable("invoke")) }
 func Destroy(auth, data []byte) ([]byte, error) { return errResult(hostSignSendUnavailable("destroy")) }
+
+// ---- observe (implemented: read current state + effective_config) ----
+
+type observeRequest struct {
+	Kind    string      `json:"kind"`
+	Binding execBinding `json:"binding"`
+}
+
+type observation struct {
+	State            map[string]json.RawMessage `json:"state"`            // raw provider state as read
+	EffectiveConfig  map[string]json.RawMessage `json:"effective_config"` // config-surface projection, comparable to intent
+	ProviderMetadata provMeta                   `json:"provider_metadata"`
+}
+
+type provMeta struct {
+	ResourceID   string `json:"resource_id"`
+	Etag         string `json:"etag,omitempty"`
+	OpcRequestID string `json:"opc_request_id,omitempty"`
+	ObservedAt   string `json:"observed_at,omitempty"`
+}
+
+// Observe reads the current provider state with a signed GET (Get<Resource>) and
+// returns the raw state plus effective_config — the config-surface projection
+// that is directly comparable to intent (so plan diffs like against like). The
+// revision (etag) is first-class for optimistic concurrency.
+func Observe(auth, data []byte) ([]byte, error) {
+	var req observeRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return errResult(&providerError{Class: classValidation, Message: "observe-request is not valid JSON: " + err.Error()})
+	}
+	if req.Binding.Host == "" || req.Binding.KeyID == "" || req.Binding.ResourceID == "" {
+		return errResult(&providerError{Class: classValidation, FieldPath: "binding", Message: "binding.host, binding.key_id and binding.resource_id are required"})
+	}
+	c, ok := resourceContracts()[req.Kind]
+	if !ok {
+		return errResult(&providerError{Class: classValidation, FieldPath: "kind", Message: "no contract for kind " + req.Kind})
+	}
+	getOp, ok := c.operations["Get"+c.resource]
+	if !ok {
+		return errResult(&providerError{Class: classInternal, Message: "no Get operation for kind " + req.Kind})
+	}
+
+	path := templatePath(getOp.path, req.Binding.ResourceID)
+	date := nowFunc().Format(ociTimeFormat)
+	status, headers, respBody, err := actuateSigned(getOp.method, req.Binding.Host, path, req.Binding.KeyID, nil, date)
+	if err != nil {
+		return errResult(&providerError{Class: classTransport, Message: err.Error()})
+	}
+	if status == 404 {
+		return errResult(&providerError{Class: classNotFound, ProviderCode: "NotAuthorizedOrNotFound", Message: "resource not found: " + req.Binding.ResourceID})
+	}
+	if status >= 400 {
+		return errResult(&providerError{Class: classProvider, Message: "provider returned HTTP " + strconv.Itoa(status)})
+	}
+
+	var state map[string]json.RawMessage
+	if err := json.Unmarshal(respBody, &state); err != nil {
+		return errResult(&providerError{Class: classProvider, Message: "provider response is not a JSON object"})
+	}
+	return okResult(observation{
+		State:           state,
+		EffectiveConfig: effectiveConfig(c, state),
+		ProviderMetadata: provMeta{
+			ResourceID:   req.Binding.ResourceID,
+			Etag:         headers["etag"],
+			OpcRequestID: headers["opc-request-id"],
+			ObservedAt:   date,
+		},
+	})
+}
+
+// effectiveConfig projects raw provider state onto the config surface: the subset
+// of state fields the contract declares settable. This is the normalized,
+// read-only view comparable to intent — provider-computed fields and operational
+// state are dropped, so a subsequent plan compares like against like.
+func effectiveConfig(c resourceContract, state map[string]json.RawMessage) map[string]json.RawMessage {
+	eff := map[string]json.RawMessage{}
+	for name := range c.fields {
+		if v, ok := state[name]; ok {
+			eff[name] = v
+		}
+	}
+	return eff
+}
 
 // ---- execute (implemented against the relay cic-flow host module, R1/R2) ----
 
@@ -655,13 +737,32 @@ func executeOne(c resourceContract, po providerOperation, config map[string]json
 	body := renderBody(c, po, config)
 	path := templatePath(po.Path, b.ResourceID)
 
-	canonical, signedHeaders, headers := ociCanonical(po.Method, b.Host, path, date, body)
+	status, headers, _, err := actuateSigned(po.Method, b.Host, path, b.KeyID, body, date)
+	if err != nil {
+		step.Error = err.Error()
+		return step, true
+	}
+	step.HTTPStatus = status
+	step.Etag = headers["etag"]
+	step.OpcRequestID = headers["opc-request-id"]
+	if status >= 400 {
+		step.Error = "provider returned HTTP " + strconv.Itoa(status)
+		return step, true
+	}
+	return step, false
+}
+
+// actuateSigned is the shared sign-then-send core used by execute and observe:
+// build the OCI canonical string, cic-flow.sign it, assemble the Authorization
+// header, cic-flow.actuate, and return the decoded response. The key never
+// enters the guest; the host enforces egress + scope.
+func actuateSigned(method, host, path, keyID string, body []byte, date string) (status int, headers map[string]string, respBody []byte, err error) {
+	canonical, signedHeaders, wire := ociCanonical(method, host, path, date, body)
 
 	sigReq, _ := json.Marshal(map[string]string{"data_base64": base64.StdEncoding.EncodeToString([]byte(canonical))})
 	sigRaw, err := callHostSign(sigReq)
 	if err != nil {
-		step.Error = "sign: " + err.Error()
-		return step, true
+		return 0, nil, nil, fmt.Errorf("sign: %s", err.Error())
 	}
 	var sig struct {
 		Signature string `json:"signature"`
@@ -669,40 +770,32 @@ func executeOne(c resourceContract, po providerOperation, config map[string]json
 	}
 	json.Unmarshal(sigRaw, &sig)
 	if sig.Error != "" || sig.Signature == "" {
-		step.Error = "sign: " + firstNonEmpty(sig.Error, "empty signature")
-		return step, true
+		return 0, nil, nil, fmt.Errorf("sign: %s", firstNonEmpty(sig.Error, "empty signature"))
 	}
 
-	headers["authorization"] = ociAuthorization(b.KeyID, signedHeaders, sig.Signature)
+	wire["authorization"] = ociAuthorization(keyID, signedHeaders, sig.Signature)
 	actReq, _ := json.Marshal(map[string]interface{}{
-		"method":      po.Method,
-		"url":         "https://" + b.Host + path,
-		"headers":     headers,
+		"method":      method,
+		"url":         "https://" + host + path,
+		"headers":     wire,
 		"body_base64": base64.StdEncoding.EncodeToString(body),
 	})
 	actRaw, err := callHostActuate(actReq)
 	if err != nil {
-		step.Error = "actuate: " + err.Error()
-		return step, true
+		return 0, nil, nil, fmt.Errorf("actuate: %s", err.Error())
 	}
 	var act struct {
-		Status  int               `json:"status"`
-		Headers map[string]string `json:"headers"`
-		Error   string            `json:"error"`
+		Status     int               `json:"status"`
+		Headers    map[string]string `json:"headers"`
+		BodyBase64 string            `json:"body_base64"`
+		Error      string            `json:"error"`
 	}
 	json.Unmarshal(actRaw, &act)
 	if act.Error != "" {
-		step.Error = "actuate: " + act.Error
-		return step, true
+		return 0, nil, nil, fmt.Errorf("actuate: %s", act.Error)
 	}
-	step.HTTPStatus = act.Status
-	step.Etag = act.Headers["etag"]
-	step.OpcRequestID = act.Headers["opc-request-id"]
-	if act.Status >= 400 {
-		step.Error = "provider returned HTTP " + strconv.Itoa(act.Status)
-		return step, true
-	}
-	return step, false
+	respBody, _ = base64.StdEncoding.DecodeString(act.BodyBase64)
+	return act.Status, act.Headers, respBody, nil
 }
 
 // renderBody builds the OCI request body for one operation from the desired

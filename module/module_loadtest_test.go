@@ -208,10 +208,10 @@ func TestHostLoadUnknownOp(t *testing.T) {
 func TestHostLoadDomainError(t *testing.T) {
 	ctx, instance, callFn, allocateFn, deallocateFn := loadModule(t)
 
-	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "observe", "{}", "{}")
+	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "poll", "{}", "{}")
 
 	if string(env.Error) != "null" {
-		t.Fatalf("Call(\"observe\"): transport error = %s, want null", env.Error)
+		t.Fatalf("Call(\"poll\"): transport error = %s, want null", env.Error)
 	}
 	var res struct {
 		Status string `json:"status"`
@@ -221,13 +221,13 @@ func TestHostLoadDomainError(t *testing.T) {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(env.Data, &res); err != nil {
-		t.Fatalf("Call(\"observe\"): data is not a providerResult: %v (raw: %s)", err, env.Data)
+		t.Fatalf("Call(\"poll\"): data is not a providerResult: %v (raw: %s)", err, env.Data)
 	}
 	if res.Status != "error" {
-		t.Errorf("Call(\"observe\"): data.status = %q, want %q", res.Status, "error")
+		t.Errorf("Call(\"poll\"): data.status = %q, want %q", res.Status, "error")
 	}
 	if res.Error.ProviderCode != "HOST_SIGN_SEND_UNAVAILABLE" {
-		t.Errorf("Call(\"observe\"): provider_code = %q, want HOST_SIGN_SEND_UNAVAILABLE", res.Error.ProviderCode)
+		t.Errorf("Call(\"poll\"): provider_code = %q, want HOST_SIGN_SEND_UNAVAILABLE", res.Error.ProviderCode)
 	}
 }
 

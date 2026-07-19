@@ -158,6 +158,7 @@ func typeToSchema(goType string) map[string]interface{} {
 // provider_operation without embedding the whole registry.
 func ResourceOperationMap(operations []Operation, resource string, policies []FieldPolicy) map[string]map[string]string {
 	need := map[string]bool{
+		"Get" + resource:    true, // observe (read)
 		"Create" + resource: true,
 		"Update" + resource: true,
 		"Delete" + resource: true,
