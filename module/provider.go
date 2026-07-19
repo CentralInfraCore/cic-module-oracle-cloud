@@ -582,7 +582,7 @@ func Destroy(auth, data []byte) ([]byte, error) {
 		return errResult(perr)
 	}
 	_ = c
-	path := templatePath(op.path, req.Binding.ResourceID)
+	path := opPath(req.Binding, op.path)
 	status, headers, _, err := actuateSigned(op.method, req.Binding.Host, path, req.Binding.KeyID, nil, nowFunc().Format(ociTimeFormat))
 	if err != nil {
 		return errResult(&providerError{Class: classTransport, Message: err.Error()})
@@ -646,7 +646,7 @@ func Invoke(auth, data []byte) ([]byte, error) {
 	} else {
 		body = []byte("{}")
 	}
-	path := templatePath(op.path, req.Binding.ResourceID)
+	path := opPath(req.Binding, op.path)
 	status, headers, _, err := actuateSigned(op.method, req.Binding.Host, path, req.Binding.KeyID, body, nowFunc().Format(ociTimeFormat))
 	if err != nil {
 		return errResult(&providerError{Class: classTransport, Message: err.Error()})
@@ -771,7 +771,7 @@ func Observe(auth, data []byte) ([]byte, error) {
 		return errResult(&providerError{Class: classInternal, Message: "no Get operation for kind " + req.Kind})
 	}
 
-	path := templatePath(getOp.path, req.Binding.ResourceID)
+	path := opPath(req.Binding, getOp.path)
 	date := nowFunc().Format(ociTimeFormat)
 	status, headers, respBody, err := actuateSigned(getOp.method, req.Binding.Host, path, req.Binding.KeyID, nil, date)
 	if err != nil {
@@ -824,12 +824,20 @@ type executeRequest struct {
 }
 
 // execBinding carries the provider coordinates the module needs to actuate: the
-// service host, the OCI keyId (public: tenancy/user/fingerprint), and the target
-// resource id for path templating. Not secret; supplied with the intent.
+// service host, the OCI API version prefix, the OCI keyId (public:
+// tenancy/user/fingerprint), and the target resource id for path templating.
+// Not secret; supplied with the intent.
 type execBinding struct {
 	Host       string `json:"host"`        // e.g. iaas.eu-frankfurt-1.oraclecloud.com
+	BasePath   string `json:"base_path"`   // OCI API version prefix, e.g. /20160918 (core); prepended to op paths
 	KeyID      string `json:"key_id"`      // <tenancyOCID>/<userOCID>/<fingerprint>
 	ResourceID string `json:"resource_id"` // ocid1.vcn... — fills {vcnId}/{subnetId} path params
+}
+
+// opPath is the full request path for an operation: the API version prefix from
+// the binding + the registry path with {param}s filled from the resource id.
+func opPath(b execBinding, rawPath string) string {
+	return b.BasePath + templatePath(rawPath, b.ResourceID)
 }
 
 type executionResult struct {
@@ -838,11 +846,12 @@ type executionResult struct {
 }
 
 type executionStep struct {
-	Operation    string `json:"operation"`
-	HTTPStatus   int    `json:"http_status,omitempty"`
-	Etag         string `json:"etag,omitempty"`
-	OpcRequestID string `json:"opc_request_id,omitempty"`
-	Error        string `json:"error,omitempty"`
+	Operation     string `json:"operation"`
+	HTTPStatus    int    `json:"http_status,omitempty"`
+	Etag          string `json:"etag,omitempty"`
+	OpcRequestID  string `json:"opc_request_id,omitempty"`
+	WorkRequestID string `json:"work_request_id,omitempty"` // set when the op is async (202); poll it
+	Error         string `json:"error,omitempty"`
 }
 
 // nowFunc is the clock, injectable for deterministic tests.
@@ -872,13 +881,22 @@ func Execute(auth, data []byte) ([]byte, error) {
 
 	date := nowFunc().Format(ociTimeFormat)
 	result := executionResult{Status: "succeeded"}
+	async := false
 	for _, po := range req.Plan.ProviderOperations {
 		step, fatal := executeOne(c, po, config, req.Binding, date)
 		result.Steps = append(result.Steps, step)
+		if step.WorkRequestID != "" {
+			async = true
+		}
 		if fatal {
 			result.Status = "failed"
 			break
 		}
+	}
+	// A clean run with an outstanding Work Request is "accepted", not "succeeded"
+	// — the caller polls to reach a terminal state.
+	if result.Status == "succeeded" && async {
+		result.Status = "accepted"
 	}
 	return okResult(result)
 }
@@ -888,9 +906,8 @@ func Execute(auth, data []byte) ([]byte, error) {
 func executeOne(c resourceContract, po providerOperation, config map[string]json.RawMessage, b execBinding, date string) (executionStep, bool) {
 	step := executionStep{Operation: po.Operation}
 	body := renderBody(c, po, config)
-	path := templatePath(po.Path, b.ResourceID)
 
-	status, headers, _, err := actuateSigned(po.Method, b.Host, path, b.KeyID, body, date)
+	status, headers, _, err := actuateSigned(po.Method, b.Host, opPath(b, po.Path), b.KeyID, body, date)
 	if err != nil {
 		step.Error = err.Error()
 		return step, true
@@ -898,6 +915,9 @@ func executeOne(c resourceContract, po providerOperation, config map[string]json
 	step.HTTPStatus = status
 	step.Etag = headers["etag"]
 	step.OpcRequestID = headers["opc-request-id"]
+	// An async op (202 Accepted, or an opc-work-request-id) is not done — the
+	// caller must poll the Work Request. Surface the id, not a false success.
+	step.WorkRequestID = headers["opc-work-request-id"]
 	if status >= 400 {
 		step.Error = "provider returned HTTP " + strconv.Itoa(status)
 		return step, true
