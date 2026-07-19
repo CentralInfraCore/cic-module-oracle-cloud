@@ -13,8 +13,12 @@
 //     cic-flow host module (R1/R2, CIC_Relay#91).
 //   - observe   — implemented: signed GET → raw state + effective_config
 //     projection + revision (etag).
-//   - poll/invoke/destroy — scaffold: sign+send ops buildable on the same
-//     cic-flow pattern; return a typed provider-error until wired.
+//   - destroy   — implemented: signed DELETE (Delete<Resource>).
+//   - invoke    — implemented: a named action operation with its config body.
+//   - poll      — implemented: signed GET of an async Work Request → lifecycle.
+//
+// All eight ops are real; the sign+send ones actuate through the relay cic-flow
+// host module (R1/R2, CIC_Relay#91).
 package main
 
 import (
@@ -111,21 +115,6 @@ func okResult(v interface{}) ([]byte, error) {
 
 func errResult(pe *providerError) ([]byte, error) {
 	return json.Marshal(providerResult{Status: "error", Error: pe})
-}
-
-// hostSignSendUnavailable is the scaffold error for every sign+send op: the
-// relay trust-flow host capability (relay-requirements.md R1/R2) is not wired,
-// so the op cannot actuate. Typed transport-class, non-retryable, with a
-// provider_code a reviewer can grep for.
-func hostSignSendUnavailable(op string) *providerError {
-	return &providerError{
-		Class:        classTransport,
-		ProviderCode: "HOST_SIGN_SEND_UNAVAILABLE",
-		Retryable:    false,
-		Message: op + ": requires the relay trust-flow sign+send host capability " +
-			"(relay-requirements.md R1/R2), not yet available. This module declares " +
-			"the reach in project.yaml capability_manifest; the host does not expose it yet.",
-	}
 }
 
 // ---- describe (implemented) ----
@@ -573,9 +562,173 @@ func reencode(raw json.RawMessage) ([]byte, error) {
 // returns the typed hostSignSendUnavailable error — an honest scaffold, not a
 // faked success.
 
-func Poll(auth, data []byte) ([]byte, error)    { return errResult(hostSignSendUnavailable("poll")) }
-func Invoke(auth, data []byte) ([]byte, error)  { return errResult(hostSignSendUnavailable("invoke")) }
-func Destroy(auth, data []byte) ([]byte, error) { return errResult(hostSignSendUnavailable("destroy")) }
+// ---- destroy (implemented: signed DELETE) ----
+
+type destroyRequest struct {
+	Kind    string      `json:"kind"`
+	Binding execBinding `json:"binding"`
+}
+
+// Destroy tears down a resource with a signed DELETE (Delete<Resource>). A 404 is
+// reported as not-found (the resource is already gone); otherwise it returns an
+// execution-result with the single delete step.
+func Destroy(auth, data []byte) ([]byte, error) {
+	var req destroyRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return errResult(&providerError{Class: classValidation, Message: "destroy-request is not valid JSON: " + err.Error()})
+	}
+	c, op, perr := resolveOp(req.Kind, "Delete", req.Binding)
+	if perr != nil {
+		return errResult(perr)
+	}
+	_ = c
+	path := templatePath(op.path, req.Binding.ResourceID)
+	status, headers, _, err := actuateSigned(op.method, req.Binding.Host, path, req.Binding.KeyID, nil, nowFunc().Format(ociTimeFormat))
+	if err != nil {
+		return errResult(&providerError{Class: classTransport, Message: err.Error()})
+	}
+	if status == 404 {
+		return errResult(&providerError{Class: classNotFound, Message: "resource already gone: " + req.Binding.ResourceID})
+	}
+	step := executionStep{Operation: "Delete" + c.resource, HTTPStatus: status, OpcRequestID: headers["opc-request-id"]}
+	result := executionResult{Status: "succeeded"}
+	if status >= 400 {
+		step.Error = "provider returned HTTP " + strconv.Itoa(status)
+		result.Status = "failed"
+	}
+	result.Steps = []executionStep{step}
+	return okResult(result)
+}
+
+// ---- invoke (implemented: a named non-CRUD action) ----
+
+type invokeRequest struct {
+	Kind      string        `json:"kind"`
+	Operation string        `json:"operation"` // e.g. ChangeVcnCompartment
+	Config    schemaPayload `json:"config"`    // the action's input fields
+	Binding   execBinding   `json:"binding"`
+}
+
+type operationResult struct {
+	Status       string `json:"status"` // succeeded | failed
+	Operation    string `json:"operation"`
+	HTTPStatus   int    `json:"http_status,omitempty"`
+	Etag         string `json:"etag,omitempty"`
+	OpcRequestID string `json:"opc_request_id,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
+// Invoke runs a named action operation (start/stop/attach/changeCompartment, …)
+// against the resource, carrying the request's config fields as the action body.
+func Invoke(auth, data []byte) ([]byte, error) {
+	var req invokeRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return errResult(&providerError{Class: classValidation, Message: "invoke-request is not valid JSON: " + err.Error()})
+	}
+	if req.Operation == "" {
+		return errResult(&providerError{Class: classValidation, FieldPath: "operation", Message: "operation is required"})
+	}
+	c, ok := resourceContracts()[req.Kind]
+	if !ok {
+		return errResult(&providerError{Class: classValidation, FieldPath: "kind", Message: "no contract for kind " + req.Kind})
+	}
+	if req.Binding.Host == "" || req.Binding.KeyID == "" || req.Binding.ResourceID == "" {
+		return errResult(&providerError{Class: classValidation, FieldPath: "binding", Message: "binding.host, binding.key_id and binding.resource_id are required"})
+	}
+	op, ok := c.operations[req.Operation]
+	if !ok {
+		return errResult(&providerError{Class: classValidation, FieldPath: "operation", Message: "unknown operation for kind: " + req.Operation})
+	}
+
+	var body []byte
+	if len(req.Config.Data) > 0 {
+		body = []byte(req.Config.Data)
+	} else {
+		body = []byte("{}")
+	}
+	path := templatePath(op.path, req.Binding.ResourceID)
+	status, headers, _, err := actuateSigned(op.method, req.Binding.Host, path, req.Binding.KeyID, body, nowFunc().Format(ociTimeFormat))
+	if err != nil {
+		return errResult(&providerError{Class: classTransport, Message: err.Error()})
+	}
+	res := operationResult{Status: "succeeded", Operation: req.Operation, HTTPStatus: status, Etag: headers["etag"], OpcRequestID: headers["opc-request-id"]}
+	if status >= 400 {
+		res.Status = "failed"
+		res.Error = "provider returned HTTP " + strconv.Itoa(status)
+	}
+	return okResult(res)
+}
+
+// ---- poll (implemented: advance an async job toward terminal) ----
+
+type pollRequest struct {
+	Binding execBinding `json:"binding"`
+	Path    string      `json:"path"` // the work-request path to GET (from an async result)
+}
+
+type pollResult struct {
+	WorkStatus      string `json:"work_status"`      // OCI WorkRequest status
+	PercentComplete int    `json:"percent_complete"` // 0..100
+	Terminal        bool   `json:"terminal"`
+	HTTPStatus      int    `json:"http_status"`
+}
+
+// Poll GETs an OCI Work Request (path supplied from an async execute result) and
+// reports its lifecycle. terminal is true once the job reached SUCCEEDED, FAILED,
+// or CANCELED — the caller stops polling then.
+func Poll(auth, data []byte) ([]byte, error) {
+	var req pollRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return errResult(&providerError{Class: classValidation, Message: "poll-request is not valid JSON: " + err.Error()})
+	}
+	if req.Binding.Host == "" || req.Binding.KeyID == "" || req.Path == "" {
+		return errResult(&providerError{Class: classValidation, FieldPath: "binding/path", Message: "binding.host, binding.key_id and path are required"})
+	}
+	status, _, respBody, err := actuateSigned("GET", req.Binding.Host, req.Path, req.Binding.KeyID, nil, nowFunc().Format(ociTimeFormat))
+	if err != nil {
+		return errResult(&providerError{Class: classTransport, Message: err.Error()})
+	}
+	if status >= 400 {
+		return errResult(&providerError{Class: classProvider, Message: "provider returned HTTP " + strconv.Itoa(status)})
+	}
+	var wr struct {
+		Status          string `json:"status"`
+		PercentComplete int    `json:"percentComplete"`
+	}
+	json.Unmarshal(respBody, &wr)
+	return okResult(pollResult{
+		WorkStatus:      wr.Status,
+		PercentComplete: wr.PercentComplete,
+		Terminal:        isTerminalWorkStatus(wr.Status),
+		HTTPStatus:      status,
+	})
+}
+
+func isTerminalWorkStatus(s string) bool {
+	switch strings.ToUpper(s) {
+	case "SUCCEEDED", "FAILED", "CANCELED", "CANCELLED":
+		return true
+	default:
+		return false
+	}
+}
+
+// resolveOp looks up a resource's Create/Update/Delete/Get operation by verb and
+// validates the binding — shared by the CRUD ops.
+func resolveOp(kind, verb string, b execBinding) (resourceContract, httpOp, *providerError) {
+	c, ok := resourceContracts()[kind]
+	if !ok {
+		return resourceContract{}, httpOp{}, &providerError{Class: classValidation, FieldPath: "kind", Message: "no contract for kind " + kind}
+	}
+	if b.Host == "" || b.KeyID == "" || b.ResourceID == "" {
+		return c, httpOp{}, &providerError{Class: classValidation, FieldPath: "binding", Message: "binding.host, binding.key_id and binding.resource_id are required"}
+	}
+	op, ok := c.operations[verb+c.resource]
+	if !ok {
+		return c, httpOp{}, &providerError{Class: classInternal, Message: "no " + verb + " operation for kind " + kind}
+	}
+	return c, op, nil
+}
 
 // ---- observe (implemented: read current state + effective_config) ----
 

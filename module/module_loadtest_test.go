@@ -200,11 +200,10 @@ func TestHostLoadUnknownOp(t *testing.T) {
 	}
 }
 
-// TestHostLoadDomainError verifies the domain-error path through wasm: a
-// still-scaffolded sign+send op (observe) returns a SUCCESSFUL transport call
-// (error null) whose data is an "error" providerResult carrying the typed
-// scaffold provider-error (provider.go: hostSignSendUnavailable). Domain errors
-// live in data, not the transport error slot.
+// TestHostLoadDomainError verifies the domain-error path through wasm: a sign+send
+// op called without a binding (poll, "{}") returns a SUCCESSFUL transport call
+// (error null) whose data is an "error" providerResult of class validation.
+// Domain errors live in data, not the transport error slot.
 func TestHostLoadDomainError(t *testing.T) {
 	ctx, instance, callFn, allocateFn, deallocateFn := loadModule(t)
 
@@ -216,18 +215,14 @@ func TestHostLoadDomainError(t *testing.T) {
 	var res struct {
 		Status string `json:"status"`
 		Error  struct {
-			Class        string `json:"class"`
-			ProviderCode string `json:"provider_code"`
+			Class string `json:"class"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(env.Data, &res); err != nil {
 		t.Fatalf("Call(\"poll\"): data is not a providerResult: %v (raw: %s)", err, env.Data)
 	}
-	if res.Status != "error" {
-		t.Errorf("Call(\"poll\"): data.status = %q, want %q", res.Status, "error")
-	}
-	if res.Error.ProviderCode != "HOST_SIGN_SEND_UNAVAILABLE" {
-		t.Errorf("Call(\"poll\"): provider_code = %q, want HOST_SIGN_SEND_UNAVAILABLE", res.Error.ProviderCode)
+	if res.Status != "error" || res.Error.Class != "validation" {
+		t.Errorf("Call(\"poll\", no binding): got status=%q class=%q, want error/validation", res.Status, res.Error.Class)
 	}
 }
 
