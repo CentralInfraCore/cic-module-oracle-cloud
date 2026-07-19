@@ -81,10 +81,12 @@ wasm.repro-probe: ## Rebuild to scratch and REPORT bit-reproducibility (non-fata
 # keeps working; do not add new references — use wasm.integrity-verify.
 wasm.rebuild-verify: wasm.integrity-verify ## Deprecated alias for wasm.integrity-verify
 
-# Host-load smoke test: load module.wasm with wazero (same runtime as
-# CIC-Relay/core/cabinet/cicwasm.go), verify the ABI exports and one
-# Call("get", ...) round trip.
-wasm.test: ## Host-load module.wasm against the relay cabinet ABI (go test)
+# Module test suite: the wazero host-load tests (load module.wasm, verify the ABI
+# and drive the ops — including execute/observe via a mock cic-flow and the real
+# crypto relay-integration test) AND the host-side domain unit tests
+# (provider/oci_sign/contracts). Runs every `go test` in module/ so all
+# assertions are guarded in CI, not just the host-load smoke tests.
+wasm.test: ## Run the module's full go test suite (host-load + domain unit + integration)
 	@test -f $(WASM_OUT) || { echo "$(WASM_OUT) not found — run 'make wasm.build' first"; exit 1; }
 	docker compose exec -T builder sh -eu -o pipefail -c \
-		'cd /app/module && GOFLAGS=-mod=mod go test -run TestHostLoad -v .'
+		'cd /app/module && GOFLAGS=-mod=mod go test -v .'
