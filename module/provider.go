@@ -581,20 +581,24 @@ func Destroy(auth, data []byte) ([]byte, error) {
 	if perr != nil {
 		return errResult(perr)
 	}
-	_ = c
-	path := opPath(req.Binding, op.path)
-	status, headers, _, err := actuateSigned(op.method, req.Binding.Host, path, req.Binding.KeyID, nil, nowFunc().Format(ociTimeFormat))
+	status, headers, respBody, err := actuateSigned(op.method, req.Binding.Host, opPath(req.Binding, op.path), req.Binding.KeyID, nil, nowFunc().Format(ociTimeFormat), req.Binding.Revision)
 	if err != nil {
 		return errResult(&providerError{Class: classTransport, Message: err.Error()})
 	}
 	if status == 404 {
 		return errResult(&providerError{Class: classNotFound, Message: "resource already gone: " + req.Binding.ResourceID})
 	}
-	step := executionStep{Operation: "Delete" + c.resource, HTTPStatus: status, OpcRequestID: headers["opc-request-id"]}
+	step := executionStep{
+		Operation: "Delete" + c.resource, HTTPStatus: status,
+		OpcRequestID: headers["opc-request-id"], WorkRequestID: headers["opc-work-request-id"],
+	}
 	result := executionResult{Status: "succeeded"}
 	if status >= 400 {
-		step.Error = "provider returned HTTP " + strconv.Itoa(status)
+		pe := ociError(status, respBody)
+		step.Error, step.ErrorClass, step.ProviderCode = pe.Message, pe.Class, pe.ProviderCode
 		result.Status = "failed"
+	} else if step.WorkRequestID != "" {
+		result.Status = "accepted"
 	}
 	result.Steps = []executionStep{step}
 	return okResult(result)
@@ -647,14 +651,14 @@ func Invoke(auth, data []byte) ([]byte, error) {
 		body = []byte("{}")
 	}
 	path := opPath(req.Binding, op.path)
-	status, headers, _, err := actuateSigned(op.method, req.Binding.Host, path, req.Binding.KeyID, body, nowFunc().Format(ociTimeFormat))
+	status, headers, respBody, err := actuateSigned(op.method, req.Binding.Host, path, req.Binding.KeyID, body, nowFunc().Format(ociTimeFormat), req.Binding.Revision)
 	if err != nil {
 		return errResult(&providerError{Class: classTransport, Message: err.Error()})
 	}
 	res := operationResult{Status: "succeeded", Operation: req.Operation, HTTPStatus: status, Etag: headers["etag"], OpcRequestID: headers["opc-request-id"]}
 	if status >= 400 {
-		res.Status = "failed"
-		res.Error = "provider returned HTTP " + strconv.Itoa(status)
+		pe := ociError(status, respBody)
+		res.Status, res.Error = "failed", pe.Message
 	}
 	return okResult(res)
 }
@@ -684,12 +688,12 @@ func Poll(auth, data []byte) ([]byte, error) {
 	if req.Binding.Host == "" || req.Binding.KeyID == "" || req.Path == "" {
 		return errResult(&providerError{Class: classValidation, FieldPath: "binding/path", Message: "binding.host, binding.key_id and path are required"})
 	}
-	status, _, respBody, err := actuateSigned("GET", req.Binding.Host, req.Path, req.Binding.KeyID, nil, nowFunc().Format(ociTimeFormat))
+	status, _, respBody, err := actuateSigned("GET", req.Binding.Host, req.Path, req.Binding.KeyID, nil, nowFunc().Format(ociTimeFormat), "")
 	if err != nil {
 		return errResult(&providerError{Class: classTransport, Message: err.Error()})
 	}
 	if status >= 400 {
-		return errResult(&providerError{Class: classProvider, Message: "provider returned HTTP " + strconv.Itoa(status)})
+		return errResult(ociError(status, respBody))
 	}
 	var wr struct {
 		Status          string `json:"status"`
@@ -773,15 +777,12 @@ func Observe(auth, data []byte) ([]byte, error) {
 
 	path := opPath(req.Binding, getOp.path)
 	date := nowFunc().Format(ociTimeFormat)
-	status, headers, respBody, err := actuateSigned(getOp.method, req.Binding.Host, path, req.Binding.KeyID, nil, date)
+	status, headers, respBody, err := actuateSigned(getOp.method, req.Binding.Host, path, req.Binding.KeyID, nil, date, "")
 	if err != nil {
 		return errResult(&providerError{Class: classTransport, Message: err.Error()})
 	}
-	if status == 404 {
-		return errResult(&providerError{Class: classNotFound, ProviderCode: "NotAuthorizedOrNotFound", Message: "resource not found: " + req.Binding.ResourceID})
-	}
 	if status >= 400 {
-		return errResult(&providerError{Class: classProvider, Message: "provider returned HTTP " + strconv.Itoa(status)})
+		return errResult(ociError(status, respBody))
 	}
 
 	var state map[string]json.RawMessage
@@ -836,6 +837,7 @@ type execBinding struct {
 	BasePath   string `json:"base_path"`   // OCI API version prefix, e.g. /20160918 (core); prepended to op paths
 	KeyID      string `json:"key_id"`      // <tenancyOCID>/<userOCID>/<fingerprint>
 	ResourceID string `json:"resource_id"` // ocid1.vcn... — fills {vcnId}/{subnetId} path params
+	Revision   string `json:"revision"`    // observed etag; sent as If-Match on mutations (optimistic concurrency)
 }
 
 // opPath is the full request path for an operation: the API version prefix from
@@ -856,6 +858,41 @@ type executionStep struct {
 	OpcRequestID  string `json:"opc_request_id,omitempty"`
 	WorkRequestID string `json:"work_request_id,omitempty"` // set when the op is async (202); poll it
 	Error         string `json:"error,omitempty"`
+	ErrorClass    string `json:"error_class,omitempty"`   // CIC class (conflict/not-found/…)
+	ProviderCode  string `json:"provider_code,omitempty"` // OCI-native code, verbatim
+}
+
+// ociError maps an OCI error response to a CIC provider-error. OCI 4xx/5xx bodies
+// are {"code": "...", "message": "..."}; the HTTP status drives the CIC-canonical
+// class, and the native code is preserved for evidence (provider-abi.md error
+// model + concurrency: 409/412 → conflict, never a silent overwrite).
+func ociError(status int, body []byte) *providerError {
+	var oe struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	json.Unmarshal(body, &oe)
+	pe := &providerError{ProviderCode: oe.Code, Message: oe.Message}
+	if pe.Message == "" {
+		pe.Message = "provider returned HTTP " + strconv.Itoa(status)
+	}
+	switch {
+	case status == 400:
+		pe.Class = classValidation
+	case status == 401 || status == 403:
+		pe.Class = classPermission
+	case status == 404:
+		pe.Class = classNotFound
+	case status == 409 || status == 412:
+		pe.Class = classConflict
+	case status == 429:
+		pe.Class, pe.Retryable = classTransport, true
+	case status >= 500:
+		pe.Class, pe.Retryable = classProvider, true
+	default:
+		pe.Class = classProvider
+	}
+	return pe
 }
 
 // nowFunc is the clock, injectable for deterministic tests.
@@ -911,7 +948,7 @@ func executeOne(c resourceContract, po providerOperation, config map[string]json
 	step := executionStep{Operation: po.Operation}
 	body := renderBody(c, po, config)
 
-	status, headers, _, err := actuateSigned(po.Method, b.Host, opPath(b, po.Path), b.KeyID, body, date)
+	status, headers, respBody, err := actuateSigned(po.Method, b.Host, opPath(b, po.Path), b.KeyID, body, date, b.Revision)
 	if err != nil {
 		step.Error = err.Error()
 		return step, true
@@ -923,7 +960,8 @@ func executeOne(c resourceContract, po providerOperation, config map[string]json
 	// caller must poll the Work Request. Surface the id, not a false success.
 	step.WorkRequestID = headers["opc-work-request-id"]
 	if status >= 400 {
-		step.Error = "provider returned HTTP " + strconv.Itoa(status)
+		pe := ociError(status, respBody)
+		step.Error, step.ErrorClass, step.ProviderCode = pe.Message, pe.Class, pe.ProviderCode
 		return step, true
 	}
 	return step, false
@@ -933,7 +971,7 @@ func executeOne(c resourceContract, po providerOperation, config map[string]json
 // build the OCI canonical string, cic-flow.sign it, assemble the Authorization
 // header, cic-flow.actuate, and return the decoded response. The key never
 // enters the guest; the host enforces egress + scope.
-func actuateSigned(method, host, path, keyID string, body []byte, date string) (status int, headers map[string]string, respBody []byte, err error) {
+func actuateSigned(method, host, path, keyID string, body []byte, date, ifMatch string) (status int, headers map[string]string, respBody []byte, err error) {
 	canonical, signedHeaders, wire := ociCanonical(method, host, path, date, body)
 
 	sigReq, _ := json.Marshal(map[string]string{"data_base64": base64.StdEncoding.EncodeToString([]byte(canonical))})
@@ -951,6 +989,11 @@ func actuateSigned(method, host, path, keyID string, body []byte, date string) (
 	}
 
 	wire["authorization"] = ociAuthorization(keyID, signedHeaders, sig.Signature)
+	// If-Match (optimistic concurrency) is a wire header, not a signed one — OCI
+	// signs only its fixed header set; extra headers travel unsigned.
+	if ifMatch != "" {
+		wire["if-match"] = ifMatch
+	}
 	actReq, _ := json.Marshal(map[string]interface{}{
 		"method":      method,
 		"url":         "https://" + host + path,

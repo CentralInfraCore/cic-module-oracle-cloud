@@ -266,6 +266,45 @@ func TestExecuteAsyncAndBasePath(t *testing.T) {
 	}
 }
 
+// TestExecuteErrorAndIfMatch checks OCI error mapping (409 {code,message} →
+// conflict + provider_code) and optimistic concurrency (binding.revision → the
+// If-Match wire header).
+func TestExecuteErrorAndIfMatch(t *testing.T) {
+	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
+	var gotIfMatch string
+	testCallHostActuate = func(req []byte) ([]byte, error) {
+		var r struct {
+			Headers map[string]string `json:"headers"`
+		}
+		json.Unmarshal(req, &r)
+		gotIfMatch = r.Headers["if-match"]
+		body := `{"code":"IncorrectState","message":"resource is in an incorrect state"}`
+		out, _ := json.Marshal(map[string]interface{}{"status": 409, "headers": map[string]string{}, "body_base64": base64.StdEncoding.EncodeToString([]byte(body))})
+		return out, nil
+	}
+	defer func() { testCallHostSign = nil; testCallHostActuate = nil }()
+
+	req, _ := json.Marshal(executeRequest{
+		Kind:    "cic:network:vcn",
+		Plan:    executionPlan{ProviderOperations: []providerOperation{{Operation: "UpdateVcn", Method: "PUT", Path: "/vcns/{vcnId}"}}},
+		Config:  schemaPayload{Data: json.RawMessage(`{"displayName":"x"}`)},
+		Binding: execBinding{Host: "h", KeyID: "k", ResourceID: "ocid1.vcn..z", Revision: "etag-42"},
+	})
+	out, _ := Execute(nil, req)
+	var er executionResult
+	json.Unmarshal(decodeResult(t, out).Result, &er)
+	if er.Status != "failed" || len(er.Steps) != 1 {
+		t.Fatalf("execute = %+v, want failed with 1 step", er)
+	}
+	s := er.Steps[0]
+	if s.ErrorClass != "conflict" || s.ProviderCode != "IncorrectState" {
+		t.Errorf("step error = %s/%s, want conflict/IncorrectState", s.ErrorClass, s.ProviderCode)
+	}
+	if gotIfMatch != "etag-42" {
+		t.Errorf("if-match header = %q, want etag-42", gotIfMatch)
+	}
+}
+
 func TestObserve(t *testing.T) {
 	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
 	testCallHostActuate = func(req []byte) ([]byte, error) {
