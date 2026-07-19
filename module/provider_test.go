@@ -229,10 +229,47 @@ func TestPlanSubnet(t *testing.T) {
 // returns a signature, actuate returns a canned VCN read. It checks that
 // effective_config is the config-surface projection (settable fields only), that
 // raw state keeps everything, and that the revision (etag) is surfaced.
+// TestExecuteAsyncAndBasePath checks the OCI API version prefix is prepended and
+// that a 202 with an opc-work-request-id yields an "accepted" result carrying the
+// work-request id to poll (not a false "succeeded").
+func TestExecuteAsyncAndBasePath(t *testing.T) {
+	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
+	var gotURL string
+	testCallHostActuate = func(req []byte) ([]byte, error) {
+		var r struct {
+			URL string `json:"url"`
+		}
+		json.Unmarshal(req, &r)
+		gotURL = r.URL
+		out, _ := json.Marshal(map[string]interface{}{"status": 202, "headers": map[string]string{"opc-work-request-id": "ocid1.wr..a"}})
+		return out, nil
+	}
+	defer func() { testCallHostSign = nil; testCallHostActuate = nil }()
+
+	req, _ := json.Marshal(executeRequest{
+		Kind:    "cic:network:vcn",
+		Plan:    executionPlan{ProviderOperations: []providerOperation{{Operation: "UpdateVcn", Method: "PUT", Path: "/vcns/{vcnId}"}}},
+		Config:  schemaPayload{Data: json.RawMessage(`{"displayName":"x"}`)},
+		Binding: execBinding{Host: "h", BasePath: "/20160918", KeyID: "k", ResourceID: "ocid1.vcn..z"},
+	})
+	out, _ := Execute(nil, req)
+	var er executionResult
+	json.Unmarshal(decodeResult(t, out).Result, &er)
+	if er.Status != "accepted" {
+		t.Errorf("status = %q, want accepted", er.Status)
+	}
+	if len(er.Steps) != 1 || er.Steps[0].WorkRequestID != "ocid1.wr..a" {
+		t.Errorf("steps = %+v, want work_request_id ocid1.wr..a", er.Steps)
+	}
+	if gotURL != "https://h/20160918/vcns/ocid1.vcn..z" {
+		t.Errorf("url = %q, want the base_path-prefixed path", gotURL)
+	}
+}
+
 func TestObserve(t *testing.T) {
 	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
 	testCallHostActuate = func(req []byte) ([]byte, error) {
-		vcn := `{"id":"ocid1.vcn..x","compartmentId":"ocid1.compartment..c","displayName":"prod","dnsLabel":"prod","lifecycleState":"AVAILABLE","cidrBlocks":["10.0.0.0/16"],"timeCreated":"2026-07-19T00:00:00Z"}`
+		vcn := `{"id":"ocid1.vcn..x","compartmentId":"ocid1.compartment..c","displayName":"prod","dnsLabel":"prod","lifecycleState":"AVAILABLE","cidrBlocks":["10.0.0.0/16"],"ipv6CidrBlocks":["2603:c020::/48"],"timeCreated":"2026-07-19T00:00:00Z"}`
 		out, _ := json.Marshal(map[string]interface{}{
 			"status":      200,
 			"headers":     map[string]string{"etag": "etag-9", "opc-request-id": "req-9"},
@@ -277,6 +314,13 @@ func TestObserve(t *testing.T) {
 	}
 	if obs.ProviderMetadata.Etag != "etag-9" || obs.ProviderMetadata.ResourceID != "ocid1.vcn..x" {
 		t.Errorf("provider_metadata = %+v, want etag-9 / ocid1.vcn..x", obs.ProviderMetadata)
+	}
+
+	// Semantic correspondence: the input-only isIpv6Enabled is derived from the
+	// non-empty ipv6CidrBlocks state field, so effective_config carries it even
+	// though the read never returns isIpv6Enabled directly.
+	if string(obs.EffectiveConfig["isIpv6Enabled"]) != "true" {
+		t.Errorf("effective_config.isIpv6Enabled = %s, want true (derived from ipv6CidrBlocks)", obs.EffectiveConfig["isIpv6Enabled"])
 	}
 }
 

@@ -38,7 +38,7 @@ metadata:
   # the build-gap between the prepare and finalize release phases. The
   # finalization phase (tools/infra.py: _resign_with_build_hash) requires
   # this to be non-empty and re-signs metadata.sign to cover it.
-  buildHash: 5d813252618263395d40e0534308422fc25c8f4b9b269ae0c3c1eaf5c55b87dc
+  buildHash: 2b861f58ca088b1c2cbbda1bfef627878411f16e2d9177a82cbf8a4bc25bd5d2
   cicSign: 'TBD'
   cicSignedCA:
     certificate: "TBD — filled by the release process with the CIC Root CA certificate"
