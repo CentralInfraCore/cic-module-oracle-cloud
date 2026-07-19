@@ -319,7 +319,7 @@ func TestSignSendOpsAreScaffold(t *testing.T) {
 		name string
 		fn   func(a, d []byte) ([]byte, error)
 	}{
-		{"observe", Observe}, {"execute", Execute}, {"poll", Poll},
+		{"observe", Observe}, {"poll", Poll},
 		{"invoke", Invoke}, {"destroy", Destroy},
 	} {
 		t.Run(h.name, func(t *testing.T) {

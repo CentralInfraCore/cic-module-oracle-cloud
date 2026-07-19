@@ -20,11 +20,14 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // abiVersion is the provider interface this module implements.
@@ -572,7 +575,192 @@ func reencode(raw json.RawMessage) ([]byte, error) {
 // faked success.
 
 func Observe(auth, data []byte) ([]byte, error) { return errResult(hostSignSendUnavailable("observe")) }
-func Execute(auth, data []byte) ([]byte, error) { return errResult(hostSignSendUnavailable("execute")) }
 func Poll(auth, data []byte) ([]byte, error)    { return errResult(hostSignSendUnavailable("poll")) }
 func Invoke(auth, data []byte) ([]byte, error)  { return errResult(hostSignSendUnavailable("invoke")) }
 func Destroy(auth, data []byte) ([]byte, error) { return errResult(hostSignSendUnavailable("destroy")) }
+
+// ---- execute (implemented against the relay cic-flow host module, R1/R2) ----
+
+type executeRequest struct {
+	Kind    string        `json:"kind"`
+	Plan    executionPlan `json:"plan"`   // the approved plan (with provider_operations)
+	Config  schemaPayload `json:"config"` // desired config, to render request bodies
+	Binding execBinding   `json:"binding"`
+}
+
+// execBinding carries the provider coordinates the module needs to actuate: the
+// service host, the OCI keyId (public: tenancy/user/fingerprint), and the target
+// resource id for path templating. Not secret; supplied with the intent.
+type execBinding struct {
+	Host       string `json:"host"`        // e.g. iaas.eu-frankfurt-1.oraclecloud.com
+	KeyID      string `json:"key_id"`      // <tenancyOCID>/<userOCID>/<fingerprint>
+	ResourceID string `json:"resource_id"` // ocid1.vcn... — fills {vcnId}/{subnetId} path params
+}
+
+type executionResult struct {
+	Status string          `json:"status"` // succeeded | failed
+	Steps  []executionStep `json:"steps"`
+}
+
+type executionStep struct {
+	Operation    string `json:"operation"`
+	HTTPStatus   int    `json:"http_status,omitempty"`
+	Etag         string `json:"etag,omitempty"`
+	OpcRequestID string `json:"opc_request_id,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
+// nowFunc is the clock, injectable for deterministic tests.
+var nowFunc = func() time.Time { return time.Now().UTC() }
+
+// Execute runs an approved plan verbatim: for each provider_operation it renders
+// the OCI body, builds the draft-cavage canonical string, has the host sign it
+// (cic-flow.sign), assembles the Authorization header, and sends the request
+// (cic-flow.actuate). It stops at the first failing step. The module never sees
+// the key; the host enforces egress + scope from the signed manifest.
+func Execute(auth, data []byte) ([]byte, error) {
+	var req executeRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return errResult(&providerError{Class: classValidation, Message: "execute-request is not valid JSON: " + err.Error()})
+	}
+	if req.Binding.Host == "" || req.Binding.KeyID == "" {
+		return errResult(&providerError{Class: classValidation, FieldPath: "binding", Message: "binding.host and binding.key_id are required"})
+	}
+	c, ok := resourceContracts()[req.Kind]
+	if !ok {
+		return errResult(&providerError{Class: classValidation, FieldPath: "kind", Message: "no contract for kind " + req.Kind})
+	}
+	config, err := decodeObject(req.Config.Data)
+	if err != nil {
+		return errResult(&providerError{Class: classSchema, FieldPath: "config.data", Message: err.Error()})
+	}
+
+	date := nowFunc().Format(ociTimeFormat)
+	result := executionResult{Status: "succeeded"}
+	for _, po := range req.Plan.ProviderOperations {
+		step, fatal := executeOne(c, po, config, req.Binding, date)
+		result.Steps = append(result.Steps, step)
+		if fatal {
+			result.Status = "failed"
+			break
+		}
+	}
+	return okResult(result)
+}
+
+// executeOne runs a single provider operation: render → sign → actuate. fatal is
+// true when the step failed and the plan must stop.
+func executeOne(c resourceContract, po providerOperation, config map[string]json.RawMessage, b execBinding, date string) (executionStep, bool) {
+	step := executionStep{Operation: po.Operation}
+	body := renderBody(c, po, config)
+	path := templatePath(po.Path, b.ResourceID)
+
+	canonical, signedHeaders, headers := ociCanonical(po.Method, b.Host, path, date, body)
+
+	sigReq, _ := json.Marshal(map[string]string{"data_base64": base64.StdEncoding.EncodeToString([]byte(canonical))})
+	sigRaw, err := callHostSign(sigReq)
+	if err != nil {
+		step.Error = "sign: " + err.Error()
+		return step, true
+	}
+	var sig struct {
+		Signature string `json:"signature"`
+		Error     string `json:"error"`
+	}
+	json.Unmarshal(sigRaw, &sig)
+	if sig.Error != "" || sig.Signature == "" {
+		step.Error = "sign: " + firstNonEmpty(sig.Error, "empty signature")
+		return step, true
+	}
+
+	headers["authorization"] = ociAuthorization(b.KeyID, signedHeaders, sig.Signature)
+	actReq, _ := json.Marshal(map[string]interface{}{
+		"method":      po.Method,
+		"url":         "https://" + b.Host + path,
+		"headers":     headers,
+		"body_base64": base64.StdEncoding.EncodeToString(body),
+	})
+	actRaw, err := callHostActuate(actReq)
+	if err != nil {
+		step.Error = "actuate: " + err.Error()
+		return step, true
+	}
+	var act struct {
+		Status  int               `json:"status"`
+		Headers map[string]string `json:"headers"`
+		Error   string            `json:"error"`
+	}
+	json.Unmarshal(actRaw, &act)
+	if act.Error != "" {
+		step.Error = "actuate: " + act.Error
+		return step, true
+	}
+	step.HTTPStatus = act.Status
+	step.Etag = act.Headers["etag"]
+	step.OpcRequestID = act.Headers["opc-request-id"]
+	if act.Status >= 400 {
+		step.Error = "provider returned HTTP " + strconv.Itoa(act.Status)
+		return step, true
+	}
+	return step, false
+}
+
+// renderBody builds the OCI request body for one operation from the desired
+// config: Create carries all settable fields; Update the mutable ones; an action
+// its own field(s); Delete none.
+func renderBody(c resourceContract, po providerOperation, config map[string]json.RawMessage) []byte {
+	if strings.HasPrefix(po.Operation, "Delete") {
+		return nil
+	}
+	fields := map[string]json.RawMessage{}
+	switch {
+	case strings.HasPrefix(po.Operation, "Create"):
+		for name := range c.fields {
+			if v, ok := config[name]; ok {
+				fields[name] = v
+			}
+		}
+	case strings.HasPrefix(po.Operation, "Update"):
+		for name, fd := range c.fields {
+			if fd.policy == "mutable" {
+				if v, ok := config[name]; ok {
+					fields[name] = v
+				}
+			}
+		}
+	default: // action operation (e.g. ChangeVcnCompartment)
+		for name, fd := range c.fields {
+			if fd.policy == "action-managed" && fd.action == po.Operation {
+				if v, ok := config[name]; ok {
+					fields[name] = v
+				}
+			}
+		}
+	}
+	out, _ := json.Marshal(fields)
+	return out
+}
+
+// templatePath replaces each {param} segment with the bound resource id, so a
+// registry path like /vcns/{vcnId} targets the concrete resource.
+func templatePath(path, resourceID string) string {
+	for {
+		i := strings.IndexByte(path, '{')
+		if i < 0 {
+			break
+		}
+		j := strings.IndexByte(path[i:], '}')
+		if j < 0 {
+			break
+		}
+		path = path[:i] + resourceID + path[i+j+1:]
+	}
+	return path
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
