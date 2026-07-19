@@ -1,8 +1,24 @@
 # Spec — relay sign+send host interface (R1/R2 proposal)
 
-**Piece:** P1.1–P1.4 · **Status:** proposal toward CIC-Relay · **Relay is
-read-only from here** — see [relay-requirements.md](../relay-requirements.md)
-(R1, R2) and [host-functions.md](host-functions.md).
+**Piece:** P1.1–P1.4 · **Status:** **delivered** in CIC-Relay (landed in #91;
+[#89](https://github.com/CentralInfraCore/CIC_Relay/issues/89) stays open for
+OCI-key entitlement/provisioning) · **Relay is read-only from here** — see
+[relay-requirements.md](../relay-requirements.md) (R1, R2) and
+[host-functions.md](host-functions.md).
+
+> **As-built note.** The relay implemented this with two deltas from the original
+> proposal below, now the authoritative contract:
+> 1. **ABI** — the `git` host-module convention
+>    `(req_ptr i32, req_len i32, out_ptr i32, out_len i32) -> i32` (JSON in linear
+>    memory; the guest allocates the `out` buffer; return = bytes written, or `-1`
+>    if it does not fit / on a memory error; a host-side failure is an
+>    `{"error": "..."}` JSON body with a positive return). **Not** the packed-i64
+>    sketched below.
+> 2. **`sign` request/response** — `{"data_base64": "<base64(string_to_sign)>"}` →
+>    `{"signature": "<base64>"}`. The key and algorithm are **host-bound per
+>    module** from the signed manifest, so the guest names neither `handle` nor
+>    `algorithm`, and `sign` does **not** return `key_id`. The module supplies the
+>    OCI `keyId` from its own binding when it assembles the `Authorization` header.
 
 This is the concrete interface a provider module needs from the relay to reach
 the network with credentials — the module's half of the contract, stated

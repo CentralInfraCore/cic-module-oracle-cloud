@@ -7,7 +7,9 @@ package main
 // these functions compile into this host test binary as well as the guest.
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -223,6 +225,61 @@ func TestPlanSubnet(t *testing.T) {
 	}
 }
 
+// TestObserve drives observe against injected cic-flow mocks (host build): sign
+// returns a signature, actuate returns a canned VCN read. It checks that
+// effective_config is the config-surface projection (settable fields only), that
+// raw state keeps everything, and that the revision (etag) is surfaced.
+func TestObserve(t *testing.T) {
+	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
+	testCallHostActuate = func(req []byte) ([]byte, error) {
+		vcn := `{"id":"ocid1.vcn..x","compartmentId":"ocid1.compartment..c","displayName":"prod","dnsLabel":"prod","lifecycleState":"AVAILABLE","cidrBlocks":["10.0.0.0/16"],"timeCreated":"2026-07-19T00:00:00Z"}`
+		out, _ := json.Marshal(map[string]interface{}{
+			"status":      200,
+			"headers":     map[string]string{"etag": "etag-9", "opc-request-id": "req-9"},
+			"body_base64": base64.StdEncoding.EncodeToString([]byte(vcn)),
+		})
+		return out, nil
+	}
+	defer func() { testCallHostSign = nil; testCallHostActuate = nil }()
+
+	req, _ := json.Marshal(observeRequest{
+		Kind:    "cic:network:vcn",
+		Binding: execBinding{Host: "iaas.eu-frankfurt-1.oraclecloud.com", KeyID: "t/u/f", ResourceID: "ocid1.vcn..x"},
+	})
+	out, err := Observe(nil, req)
+	if err != nil {
+		t.Fatalf("Observe transport error: %v", err)
+	}
+	res := decodeResult(t, out)
+	if res.Status != "ok" {
+		t.Fatalf("observe status = %q, want ok (raw: %s)", res.Status, out)
+	}
+	var obs observation
+	if err := json.Unmarshal(res.Result, &obs); err != nil {
+		t.Fatalf("observation decode: %v", err)
+	}
+
+	// effective_config is the settable surface only.
+	for _, f := range []string{"displayName", "compartmentId", "dnsLabel", "cidrBlocks"} {
+		if _, ok := obs.EffectiveConfig[f]; !ok {
+			t.Errorf("effective_config missing settable field %q", f)
+		}
+	}
+	// provider-computed / output-only fields must NOT be in effective_config.
+	for _, f := range []string{"id", "lifecycleState", "timeCreated"} {
+		if _, ok := obs.EffectiveConfig[f]; ok {
+			t.Errorf("effective_config must not include output-only field %q", f)
+		}
+		// ...but raw state keeps them.
+		if _, ok := obs.State[f]; !ok {
+			t.Errorf("state missing %q", f)
+		}
+	}
+	if obs.ProviderMetadata.Etag != "etag-9" || obs.ProviderMetadata.ResourceID != "ocid1.vcn..x" {
+		t.Errorf("provider_metadata = %+v, want etag-9 / ocid1.vcn..x", obs.ProviderMetadata)
+	}
+}
+
 func hasFieldError(errs []providerError, path string) bool {
 	for _, e := range errs {
 		if e.FieldPath == path {
@@ -314,12 +371,14 @@ func TestPlanClassifiesDiff(t *testing.T) {
 	}
 }
 
-func TestSignSendOpsAreScaffold(t *testing.T) {
+// TestSignSendOpsRequireBinding verifies every sign+send op fails cleanly (a
+// validation domain-error) without a binding — before any host call.
+func TestSignSendOpsRequireBinding(t *testing.T) {
 	for _, h := range []struct {
 		name string
 		fn   func(a, d []byte) ([]byte, error)
 	}{
-		{"observe", Observe}, {"execute", Execute}, {"poll", Poll},
+		{"execute", Execute}, {"observe", Observe}, {"poll", Poll},
 		{"invoke", Invoke}, {"destroy", Destroy},
 	} {
 		t.Run(h.name, func(t *testing.T) {
@@ -328,13 +387,100 @@ func TestSignSendOpsAreScaffold(t *testing.T) {
 				t.Fatalf("%s transport error: %v", h.name, err)
 			}
 			res := decodeResult(t, out)
-			if res.Status != "error" || res.Error == nil {
-				t.Fatalf("%s: got %+v, want an error result", h.name, res)
-			}
-			if res.Error.Class != classTransport || res.Error.ProviderCode != "HOST_SIGN_SEND_UNAVAILABLE" {
-				t.Errorf("%s: class/code = %q/%q, want transport/HOST_SIGN_SEND_UNAVAILABLE",
-					h.name, res.Error.Class, res.Error.ProviderCode)
+			if res.Status != "error" || res.Error == nil || res.Error.Class != classValidation {
+				t.Errorf("%s without binding: got %+v, want a validation error", h.name, res)
 			}
 		})
+	}
+}
+
+func TestDestroy(t *testing.T) {
+	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
+	var gotURL string
+	testCallHostActuate = func(req []byte) ([]byte, error) {
+		var r struct{ Method, URL string }
+		json.Unmarshal(req, &r)
+		gotURL = r.Method + " " + r.URL
+		out, _ := json.Marshal(map[string]interface{}{"status": 204, "headers": map[string]string{"opc-request-id": "d-1"}})
+		return out, nil
+	}
+	defer func() { testCallHostSign = nil; testCallHostActuate = nil }()
+
+	req, _ := json.Marshal(destroyRequest{Kind: "cic:network:vcn", Binding: execBinding{Host: "h", KeyID: "k", ResourceID: "ocid1.vcn..z"}})
+	out, _ := Destroy(nil, req)
+	res := decodeResult(t, out)
+	if res.Status != "ok" {
+		t.Fatalf("destroy status %s (raw %s)", res.Status, out)
+	}
+	var er executionResult
+	json.Unmarshal(res.Result, &er)
+	if er.Status != "succeeded" || len(er.Steps) != 1 || er.Steps[0].HTTPStatus != 204 {
+		t.Errorf("destroy result = %+v, want succeeded/1 step/204", er)
+	}
+	if gotURL != "DELETE https://h/vcns/ocid1.vcn..z" {
+		t.Errorf("destroy actuated %q, want DELETE https://h/vcns/ocid1.vcn..z", gotURL)
+	}
+}
+
+func TestInvoke(t *testing.T) {
+	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
+	var gotURL, gotBody string
+	testCallHostActuate = func(req []byte) ([]byte, error) {
+		var r struct {
+			Method     string `json:"method"`
+			URL        string `json:"url"`
+			BodyBase64 string `json:"body_base64"`
+		}
+		json.Unmarshal(req, &r)
+		b, _ := base64.StdEncoding.DecodeString(r.BodyBase64)
+		gotURL, gotBody = r.Method+" "+r.URL, string(b)
+		out, _ := json.Marshal(map[string]interface{}{"status": 200, "headers": map[string]string{"etag": "i-1", "opc-request-id": "i-1"}})
+		return out, nil
+	}
+	defer func() { testCallHostSign = nil; testCallHostActuate = nil }()
+
+	req, _ := json.Marshal(invokeRequest{
+		Kind:      "cic:network:vcn",
+		Operation: "ChangeVcnCompartment",
+		Config:    schemaPayload{Data: json.RawMessage(`{"compartmentId":"ocid1.compartment..new"}`)},
+		Binding:   execBinding{Host: "h", KeyID: "k", ResourceID: "ocid1.vcn..z"},
+	})
+	out, _ := Invoke(nil, req)
+	res := decodeResult(t, out)
+	if res.Status != "ok" {
+		t.Fatalf("invoke status %s (raw %s)", res.Status, out)
+	}
+	var or operationResult
+	json.Unmarshal(res.Result, &or)
+	if or.Status != "succeeded" || or.HTTPStatus != 200 || or.Etag != "i-1" {
+		t.Errorf("invoke result = %+v, want succeeded/200/i-1", or)
+	}
+	if gotURL != "POST https://h/vcns/ocid1.vcn..z/actions/changeCompartment" {
+		t.Errorf("invoke actuated %q", gotURL)
+	}
+	if !strings.Contains(gotBody, "ocid1.compartment..new") {
+		t.Errorf("invoke body = %q, want the compartmentId", gotBody)
+	}
+}
+
+func TestPoll(t *testing.T) {
+	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
+	testCallHostActuate = func(req []byte) ([]byte, error) {
+		wr := `{"status":"SUCCEEDED","percentComplete":100}`
+		out, _ := json.Marshal(map[string]interface{}{"status": 200, "headers": map[string]string{}, "body_base64": base64.StdEncoding.EncodeToString([]byte(wr))})
+		return out, nil
+	}
+	defer func() { testCallHostSign = nil; testCallHostActuate = nil }()
+
+	req, _ := json.Marshal(pollRequest{Binding: execBinding{Host: "h", KeyID: "k"}, Path: "/20160918/workRequests/ocid1.wr..a"})
+	out, _ := Poll(nil, req)
+	res := decodeResult(t, out)
+	if res.Status != "ok" {
+		t.Fatalf("poll status %s (raw %s)", res.Status, out)
+	}
+	var pr pollResult
+	json.Unmarshal(res.Result, &pr)
+	if pr.WorkStatus != "SUCCEEDED" || pr.PercentComplete != 100 || !pr.Terminal {
+		t.Errorf("poll result = %+v, want SUCCEEDED/100/terminal", pr)
 	}
 }

@@ -18,8 +18,10 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/tetratelabs/wazero"
@@ -62,6 +64,23 @@ func loadModule(t *testing.T) (context.Context, api.Module, api.Function, api.Fu
 
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, runtime); err != nil {
 		t.Fatalf("failed to instantiate wasi: %v", err)
+	}
+
+	// The guest imports the relay's cic-flow host module (sign/actuate). Register
+	// a stub so instantiation succeeds; tests that do not exercise execute never
+	// call it. TestHostLoadExecute builds its own runtime with a capturing mock.
+	stub := func(ctx context.Context, mod api.Module, reqPtr, reqLen, outPtr, outLen uint32) int32 {
+		resp := []byte(`{"error":"cic-flow stub: not wired in this test"}`)
+		if uint32(len(resp)) > outLen || !mod.Memory().Write(outPtr, resp) {
+			return -1
+		}
+		return int32(len(resp))
+	}
+	if _, err := runtime.NewHostModuleBuilder("cic-flow").
+		NewFunctionBuilder().WithFunc(stub).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("sign").
+		NewFunctionBuilder().WithFunc(stub).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("actuate").
+		Instantiate(ctx); err != nil {
+		t.Fatalf("failed to instantiate cic-flow stub: %v", err)
 	}
 
 	compiled, err := runtime.CompileModule(ctx, wasmBytes)
@@ -181,34 +200,29 @@ func TestHostLoadUnknownOp(t *testing.T) {
 	}
 }
 
-// TestHostLoadDomainError verifies the domain-error path through wasm: a
-// sign+send op (execute) that cannot actuate returns a SUCCESSFUL transport call
-// (error null) whose data is an "error" providerResult carrying the typed
-// scaffold provider-error (provider.go: hostSignSendUnavailable). Domain errors
-// live in data, not the transport error slot.
+// TestHostLoadDomainError verifies the domain-error path through wasm: a sign+send
+// op called without a binding (poll, "{}") returns a SUCCESSFUL transport call
+// (error null) whose data is an "error" providerResult of class validation.
+// Domain errors live in data, not the transport error slot.
 func TestHostLoadDomainError(t *testing.T) {
 	ctx, instance, callFn, allocateFn, deallocateFn := loadModule(t)
 
-	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "execute", "{}", "{}")
+	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "poll", "{}", "{}")
 
 	if string(env.Error) != "null" {
-		t.Fatalf("Call(\"execute\"): transport error = %s, want null", env.Error)
+		t.Fatalf("Call(\"poll\"): transport error = %s, want null", env.Error)
 	}
 	var res struct {
 		Status string `json:"status"`
 		Error  struct {
-			Class        string `json:"class"`
-			ProviderCode string `json:"provider_code"`
+			Class string `json:"class"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(env.Data, &res); err != nil {
-		t.Fatalf("Call(\"execute\"): data is not a providerResult: %v (raw: %s)", err, env.Data)
+		t.Fatalf("Call(\"poll\"): data is not a providerResult: %v (raw: %s)", err, env.Data)
 	}
-	if res.Status != "error" {
-		t.Errorf("Call(\"execute\"): data.status = %q, want %q", res.Status, "error")
-	}
-	if res.Error.ProviderCode != "HOST_SIGN_SEND_UNAVAILABLE" {
-		t.Errorf("Call(\"execute\"): provider_code = %q, want HOST_SIGN_SEND_UNAVAILABLE", res.Error.ProviderCode)
+	if res.Status != "error" || res.Error.Class != "validation" {
+		t.Errorf("Call(\"poll\", no binding): got status=%q class=%q, want error/validation", res.Status, res.Error.Class)
 	}
 }
 
@@ -277,6 +291,141 @@ func TestHostLoadValidateConformance(t *testing.T) {
 	// A provider-computed field in the intent is rejected by the embedded contract.
 	if ok, _ := admissible(`{"compartmentId":"ocid1..","lifecycleState":"AVAILABLE"}`); ok {
 		t.Errorf("intent with output-only field: admissible=true, want false")
+	}
+}
+
+// TestHostLoadExecute drives `execute` end-to-end through wasm against a mock
+// `cic-flow` host module that matches the relay's real ABI (R1/R2, CIC_Relay#91):
+// (req_ptr,req_len,out_ptr,out_len)->i32, JSON in linear memory. It proves the
+// guest builds the OCI signing material, calls sign, assembles the Authorization
+// header, calls actuate, and returns the execution-result — the whole sign+send
+// path, exercised over the real wasmimport surface.
+func TestHostLoadExecute(t *testing.T) {
+	wasmBytes, err := os.ReadFile(wasmPath)
+	if os.IsNotExist(err) {
+		t.Skipf("module.wasm not built — run `make wasm.build` first")
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", wasmPath, err)
+	}
+
+	ctx := context.Background()
+	rt := wazero.NewRuntime(ctx)
+	t.Cleanup(func() { rt.Close(ctx) })
+	if _, err := wasi_snapshot_preview1.Instantiate(ctx, rt); err != nil {
+		t.Fatalf("wasi: %v", err)
+	}
+
+	var signedString, actuateReq string
+	// One host-func adapter for the git/cic-flow ABI: read req JSON, hand it to
+	// handler, write the response, return bytes written (or -1 if it overruns).
+	adapt := func(handler func(req []byte) []byte) func(context.Context, api.Module, uint32, uint32, uint32, uint32) int32 {
+		return func(ctx context.Context, mod api.Module, reqPtr, reqLen, outPtr, outLen uint32) int32 {
+			req, ok := mod.Memory().Read(reqPtr, reqLen)
+			if !ok {
+				return -1
+			}
+			resp := handler(req)
+			if uint32(len(resp)) > outLen || !mod.Memory().Write(outPtr, resp) {
+				return -1
+			}
+			return int32(len(resp))
+		}
+	}
+	_, err = rt.NewHostModuleBuilder("cic-flow").
+		NewFunctionBuilder().WithFunc(adapt(func(req []byte) []byte {
+		var r struct {
+			DataBase64 string `json:"data_base64"`
+		}
+		json.Unmarshal(req, &r)
+		raw, _ := base64.StdEncoding.DecodeString(r.DataBase64)
+		signedString = string(raw)
+		out, _ := json.Marshal(map[string]string{"signature": "FAKESIG=="})
+		return out
+	})).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("sign").
+		NewFunctionBuilder().WithFunc(adapt(func(req []byte) []byte {
+		actuateReq = string(req)
+		out, _ := json.Marshal(map[string]interface{}{
+			"status":      200,
+			"headers":     map[string]string{"etag": "etag-1", "opc-request-id": "req-1"},
+			"body_base64": base64.StdEncoding.EncodeToString([]byte("{}")),
+		})
+		return out
+	})).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("actuate").
+		Instantiate(ctx)
+	if err != nil {
+		t.Fatalf("cic-flow host module: %v", err)
+	}
+
+	compiled, err := rt.CompileModule(ctx, wasmBytes)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	instance, err := rt.InstantiateModule(ctx, compiled,
+		wazero.NewModuleConfig().WithName("exec_test").WithStartFunctions())
+	if err != nil {
+		t.Fatalf("instantiate: %v", err)
+	}
+	t.Cleanup(func() { instance.Close(ctx) })
+	callFn := instance.ExportedFunction("Call")
+	allocateFn := instance.ExportedFunction("allocate")
+	deallocateFn := instance.ExportedFunction("deallocate")
+
+	// An approved plan (as `plan` would emit) + desired config + binding.
+	exReq := executeRequest{
+		Kind: "cic:network:vcn",
+		Plan: executionPlan{
+			Operation:          "update",
+			ProviderOperations: []providerOperation{{Operation: "UpdateVcn", Method: "PUT", Path: "/vcns/{vcnId}"}},
+		},
+		Config:  schemaPayload{SchemaID: "cic:network:vcn-config", Encoding: encCanonicalJSON, Data: json.RawMessage(`{"displayName":"prod-vcn"}`)},
+		Binding: execBinding{Host: "iaas.eu-frankfurt-1.oraclecloud.com", KeyID: "tenancy/user/fp", ResourceID: "ocid1.vcn.oc1..xyz"},
+	}
+	reqJSON, _ := json.Marshal(exReq)
+	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "execute", "{}", string(reqJSON))
+
+	if string(env.Error) != "null" {
+		t.Fatalf("execute transport error = %s, want null", env.Error)
+	}
+	var res struct {
+		Status string `json:"status"`
+		Result struct {
+			Status string `json:"status"`
+			Steps  []struct {
+				Operation  string `json:"operation"`
+				HTTPStatus int    `json:"http_status"`
+				Etag       string `json:"etag"`
+				Error      string `json:"error"`
+			} `json:"steps"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(env.Data, &res); err != nil {
+		t.Fatalf("decode: %v (raw: %s)", err, env.Data)
+	}
+	if res.Status != "ok" || res.Result.Status != "succeeded" {
+		t.Fatalf("execute status = %s/%s, want ok/succeeded (raw: %s)", res.Status, res.Result.Status, env.Data)
+	}
+	if len(res.Result.Steps) != 1 {
+		t.Fatalf("got %d steps, want 1: %s", len(res.Result.Steps), env.Data)
+	}
+	s := res.Result.Steps[0]
+	if s.Operation != "UpdateVcn" || s.HTTPStatus != 200 || s.Etag != "etag-1" || s.Error != "" {
+		t.Errorf("step = %+v, want UpdateVcn/200/etag-1/no-error", s)
+	}
+
+	// The guest signed the OCI canonical string with the templated path...
+	if !strings.Contains(signedString, "(request-target): put /vcns/ocid1.vcn.oc1..xyz") {
+		t.Errorf("signed string missing templated request-target:\n%s", signedString)
+	}
+	if !strings.Contains(signedString, "host: iaas.eu-frankfurt-1.oraclecloud.com") {
+		t.Errorf("signed string missing host header:\n%s", signedString)
+	}
+	// ...and actuated to the concrete URL carrying its own Signature Authorization.
+	if !strings.Contains(actuateReq, `"url":"https://iaas.eu-frankfurt-1.oraclecloud.com/vcns/ocid1.vcn.oc1..xyz"`) {
+		t.Errorf("actuate URL wrong:\n%s", actuateReq)
+	}
+	if !strings.Contains(actuateReq, `keyId=\"tenancy/user/fp\"`) || !strings.Contains(actuateReq, "FAKESIG==") {
+		t.Errorf("actuate Authorization missing keyId/signature:\n%s", actuateReq)
 	}
 }
 

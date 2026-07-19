@@ -15,9 +15,16 @@ exists in `CIC-Relay` · `done` — landed in the relay.
 
 ---
 
-## R1 — Expose the trust-flow to WASM guests · raised ([CIC_Relay#87](https://github.com/CentralInfraCore/CIC_Relay/issues/87))
+## R1 — Expose the trust-flow to WASM guests · **done** ([CIC_Relay#87](https://github.com/CentralInfraCore/CIC_Relay/issues/87), landed in #91)
 
-**Need.** A sandboxed provider module must be able to drive a signed,
+**Delivered.** The relay built the `cic-flow` wazero host module
+(`cmd/relay/cic_flow_host_funcs.go`) — a **separate**, guest-facing, **pure-Go**
+surface (not an extension of `run_flow`, which stays the integrated Bearer FFI
+path). It is per-module live-wired (`cicFlowRegistry` resolves the calling
+guest's deps by `mod.Name()`), bound at module load, and fail-closed on
+CICSourceCA provenance. A WASM guest imports `cic-flow.sign` / `cic-flow.actuate`.
+
+**Need (original).** A sandboxed provider module must be able to drive a signed,
 egress-policed HTTP actuation. Today it cannot.
 
 **Evidence.** `cic_ffi_run_flow` (`ffi/src/lib.rs`) is a native-FFI-only entry
@@ -33,10 +40,19 @@ crate — it exposes a whole custody flow. A concrete interface proposal (the
 
 Maps to roadmap **P1.1 / P1.4**.
 
-## R2 — OCI request signing (RSA-SHA256 canonical), not Bearer · raised ([CIC_Relay#88](https://github.com/CentralInfraCore/CIC_Relay/issues/88))
+## R2 — OCI request signing (RSA-SHA256 canonical), not Bearer · **done** ([CIC_Relay#88](https://github.com/CentralInfraCore/CIC_Relay/issues/88), landed in #91)
 
-**Need.** OCI authenticates each request with RSA-SHA256 over canonical headers
-(draft-cavage HTTP Signatures). The relay's actuation applies a **Bearer**
+**Delivered.** `VaultCryptoService.SignOCI` pins `pkcs1v15` / `sha2-256` (Vault
+Transit's RSA default is PSS, which OCI rejects) and returns the raw base64
+signature; the key never leaves Vault. `cic-flow.actuate` carries the caller's
+**own** `Authorization` verbatim — no Bearer, no stripping. Proven end-to-end by
+the relay's `make demo-oci-sign` (a fake OCI endpoint verifies the draft-cavage
+RSA-SHA256 signature → 200; a tampered body → 401). Confirmed: OCI API signing
+accepts **RSA only** (PEM, ≥2048-bit), so `rsa-sha256` is correct, not a
+placeholder; the signer stays algorithm-parametric for other providers.
+
+**Need (original).** OCI authenticates each request with RSA-SHA256 over canonical
+headers (draft-cavage HTTP Signatures). The relay's actuation applies a **Bearer**
 credential, which does not authenticate an OCI call.
 
 **Evidence.** `http-executor/src/lib.rs`: "the opened credential … is applied as a
@@ -53,21 +69,25 @@ specific canonicalization stays in the module; the key stays in the airlock.
 
 A concrete interface proposal — the OCI signing profile (which headers, in which
 order), the `sign`/`actuate` split, and an end-to-end `execute` walkthrough — is
-in [specs/relay-sign-send-interface.md](specs/relay-sign-send-interface.md).
+in [specs/relay-sign-send-interface.md](specs/relay-sign-send-interface.md),
+raised as [CIC_Relay#89](https://github.com/CentralInfraCore/CIC_Relay/issues/89)
+(covers R1+R2 together).
 
 Maps to roadmap **P1.2**. This is the item that most needs relay-team input,
 because it touches the actuation/credential model.
 
-## R3 — Per-module capability-manifest enforcement · needed
+## R3 — Per-module capability-manifest enforcement · **mostly done** (feature-011)
 
-**Need.** The host must enforce each module's declared egress hosts and secret
-scope (see [specs/capability-manifest.md](specs/capability-manifest.md)), so an
-untrusted third-party module is bounded.
+**Delivered.** R3a: capability-manifest parsing from the signed `project.yaml`,
+an `abi.imports ⊆ manifest` load-time check, per-module egress policy (host
+suffix-glob + method + path + port), sign-only handle binding, and buildHash
+integrity — all fail-closed, live-wired per module. R3b: a CICSourceCA provenance
+gate (detached companion) activates `pki_verify.go`. Remaining: full `cicSign`
+verification once the CA-chain bootstrap lands.
 
-**Evidence.** `EgressPolicy::allowing(hosts)` already bounds egress per
-actuation, and the audit sink records denials. What is not yet present is binding
-that policy to a **module's signed manifest** at load, and rejecting a module
-whose imports exceed its declaration.
+**Need (original).** The host must enforce each module's declared egress hosts and
+secret scope (see [specs/capability-manifest.md](specs/capability-manifest.md)),
+so an untrusted third-party module is bounded.
 
 **Ask.** Derive the per-module `EgressPolicy` and secret scope from the verified,
 signed capability manifest; reject at load on a manifest/imports mismatch; audit

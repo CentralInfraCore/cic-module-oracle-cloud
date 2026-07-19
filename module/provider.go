@@ -4,27 +4,33 @@
 // host-side `go test` (provider_test.go) without going through wasm.
 //
 // Status discipline (three-level, see CIC/CLAUDE.md):
-//   - describe          — implemented: deterministic module manifest.
-//   - validate          — implemented at the ENVELOPE level; schema-conformance
-//     of the payload is scaffold (needs the generated OCI
-//     payload schemas, roadmap P2.3). validate reports what
-//     it actually checked in validation-result.checked.
-//   - plan              — implemented for the trivial noop (desired == observed);
-//     real diff→provider_operations is scaffold (P2.3).
-//   - observe/execute/poll/invoke/destroy — scaffold: these are sign+send ops
-//     that require the relay trust-flow host capability
-//     (relay-requirements.md R1/R2), not yet available. They
-//     return a typed provider-error naming the missing
-//     precondition — never a faked success.
+//   - describe  — implemented: deterministic module manifest.
+//   - validate  — implemented: schema-conformance against the embedded generated
+//     contract (required/unknown/type); reports validation-result.checked.
+//   - plan      — implemented: real diff → update/replace/action/noop with
+//     concrete provider_operations (HTTP method+path).
+//   - execute   — implemented: sign-then-send OCI actuation via the relay
+//     cic-flow host module (R1/R2, CIC_Relay#91).
+//   - observe   — implemented: signed GET → raw state + effective_config
+//     projection + revision (etag).
+//   - destroy   — implemented: signed DELETE (Delete<Resource>).
+//   - invoke    — implemented: a named action operation with its config body.
+//   - poll      — implemented: signed GET of an async Work Request → lifecycle.
+//
+// All eight ops are real; the sign+send ones actuate through the relay cic-flow
+// host module (R1/R2, CIC_Relay#91).
 package main
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // abiVersion is the provider interface this module implements.
@@ -109,21 +115,6 @@ func okResult(v interface{}) ([]byte, error) {
 
 func errResult(pe *providerError) ([]byte, error) {
 	return json.Marshal(providerResult{Status: "error", Error: pe})
-}
-
-// hostSignSendUnavailable is the scaffold error for every sign+send op: the
-// relay trust-flow host capability (relay-requirements.md R1/R2) is not wired,
-// so the op cannot actuate. Typed transport-class, non-retryable, with a
-// provider_code a reviewer can grep for.
-func hostSignSendUnavailable(op string) *providerError {
-	return &providerError{
-		Class:        classTransport,
-		ProviderCode: "HOST_SIGN_SEND_UNAVAILABLE",
-		Retryable:    false,
-		Message: op + ": requires the relay trust-flow sign+send host capability " +
-			"(relay-requirements.md R1/R2), not yet available. This module declares " +
-			"the reach in project.yaml capability_manifest; the host does not expose it yet.",
-	}
 }
 
 // ---- describe (implemented) ----
@@ -571,8 +562,451 @@ func reencode(raw json.RawMessage) ([]byte, error) {
 // returns the typed hostSignSendUnavailable error — an honest scaffold, not a
 // faked success.
 
-func Observe(auth, data []byte) ([]byte, error) { return errResult(hostSignSendUnavailable("observe")) }
-func Execute(auth, data []byte) ([]byte, error) { return errResult(hostSignSendUnavailable("execute")) }
-func Poll(auth, data []byte) ([]byte, error)    { return errResult(hostSignSendUnavailable("poll")) }
-func Invoke(auth, data []byte) ([]byte, error)  { return errResult(hostSignSendUnavailable("invoke")) }
-func Destroy(auth, data []byte) ([]byte, error) { return errResult(hostSignSendUnavailable("destroy")) }
+// ---- destroy (implemented: signed DELETE) ----
+
+type destroyRequest struct {
+	Kind    string      `json:"kind"`
+	Binding execBinding `json:"binding"`
+}
+
+// Destroy tears down a resource with a signed DELETE (Delete<Resource>). A 404 is
+// reported as not-found (the resource is already gone); otherwise it returns an
+// execution-result with the single delete step.
+func Destroy(auth, data []byte) ([]byte, error) {
+	var req destroyRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return errResult(&providerError{Class: classValidation, Message: "destroy-request is not valid JSON: " + err.Error()})
+	}
+	c, op, perr := resolveOp(req.Kind, "Delete", req.Binding)
+	if perr != nil {
+		return errResult(perr)
+	}
+	_ = c
+	path := templatePath(op.path, req.Binding.ResourceID)
+	status, headers, _, err := actuateSigned(op.method, req.Binding.Host, path, req.Binding.KeyID, nil, nowFunc().Format(ociTimeFormat))
+	if err != nil {
+		return errResult(&providerError{Class: classTransport, Message: err.Error()})
+	}
+	if status == 404 {
+		return errResult(&providerError{Class: classNotFound, Message: "resource already gone: " + req.Binding.ResourceID})
+	}
+	step := executionStep{Operation: "Delete" + c.resource, HTTPStatus: status, OpcRequestID: headers["opc-request-id"]}
+	result := executionResult{Status: "succeeded"}
+	if status >= 400 {
+		step.Error = "provider returned HTTP " + strconv.Itoa(status)
+		result.Status = "failed"
+	}
+	result.Steps = []executionStep{step}
+	return okResult(result)
+}
+
+// ---- invoke (implemented: a named non-CRUD action) ----
+
+type invokeRequest struct {
+	Kind      string        `json:"kind"`
+	Operation string        `json:"operation"` // e.g. ChangeVcnCompartment
+	Config    schemaPayload `json:"config"`    // the action's input fields
+	Binding   execBinding   `json:"binding"`
+}
+
+type operationResult struct {
+	Status       string `json:"status"` // succeeded | failed
+	Operation    string `json:"operation"`
+	HTTPStatus   int    `json:"http_status,omitempty"`
+	Etag         string `json:"etag,omitempty"`
+	OpcRequestID string `json:"opc_request_id,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
+// Invoke runs a named action operation (start/stop/attach/changeCompartment, …)
+// against the resource, carrying the request's config fields as the action body.
+func Invoke(auth, data []byte) ([]byte, error) {
+	var req invokeRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return errResult(&providerError{Class: classValidation, Message: "invoke-request is not valid JSON: " + err.Error()})
+	}
+	if req.Operation == "" {
+		return errResult(&providerError{Class: classValidation, FieldPath: "operation", Message: "operation is required"})
+	}
+	c, ok := resourceContracts()[req.Kind]
+	if !ok {
+		return errResult(&providerError{Class: classValidation, FieldPath: "kind", Message: "no contract for kind " + req.Kind})
+	}
+	if req.Binding.Host == "" || req.Binding.KeyID == "" || req.Binding.ResourceID == "" {
+		return errResult(&providerError{Class: classValidation, FieldPath: "binding", Message: "binding.host, binding.key_id and binding.resource_id are required"})
+	}
+	op, ok := c.operations[req.Operation]
+	if !ok {
+		return errResult(&providerError{Class: classValidation, FieldPath: "operation", Message: "unknown operation for kind: " + req.Operation})
+	}
+
+	var body []byte
+	if len(req.Config.Data) > 0 {
+		body = []byte(req.Config.Data)
+	} else {
+		body = []byte("{}")
+	}
+	path := templatePath(op.path, req.Binding.ResourceID)
+	status, headers, _, err := actuateSigned(op.method, req.Binding.Host, path, req.Binding.KeyID, body, nowFunc().Format(ociTimeFormat))
+	if err != nil {
+		return errResult(&providerError{Class: classTransport, Message: err.Error()})
+	}
+	res := operationResult{Status: "succeeded", Operation: req.Operation, HTTPStatus: status, Etag: headers["etag"], OpcRequestID: headers["opc-request-id"]}
+	if status >= 400 {
+		res.Status = "failed"
+		res.Error = "provider returned HTTP " + strconv.Itoa(status)
+	}
+	return okResult(res)
+}
+
+// ---- poll (implemented: advance an async job toward terminal) ----
+
+type pollRequest struct {
+	Binding execBinding `json:"binding"`
+	Path    string      `json:"path"` // the work-request path to GET (from an async result)
+}
+
+type pollResult struct {
+	WorkStatus      string `json:"work_status"`      // OCI WorkRequest status
+	PercentComplete int    `json:"percent_complete"` // 0..100
+	Terminal        bool   `json:"terminal"`
+	HTTPStatus      int    `json:"http_status"`
+}
+
+// Poll GETs an OCI Work Request (path supplied from an async execute result) and
+// reports its lifecycle. terminal is true once the job reached SUCCEEDED, FAILED,
+// or CANCELED — the caller stops polling then.
+func Poll(auth, data []byte) ([]byte, error) {
+	var req pollRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return errResult(&providerError{Class: classValidation, Message: "poll-request is not valid JSON: " + err.Error()})
+	}
+	if req.Binding.Host == "" || req.Binding.KeyID == "" || req.Path == "" {
+		return errResult(&providerError{Class: classValidation, FieldPath: "binding/path", Message: "binding.host, binding.key_id and path are required"})
+	}
+	status, _, respBody, err := actuateSigned("GET", req.Binding.Host, req.Path, req.Binding.KeyID, nil, nowFunc().Format(ociTimeFormat))
+	if err != nil {
+		return errResult(&providerError{Class: classTransport, Message: err.Error()})
+	}
+	if status >= 400 {
+		return errResult(&providerError{Class: classProvider, Message: "provider returned HTTP " + strconv.Itoa(status)})
+	}
+	var wr struct {
+		Status          string `json:"status"`
+		PercentComplete int    `json:"percentComplete"`
+	}
+	json.Unmarshal(respBody, &wr)
+	return okResult(pollResult{
+		WorkStatus:      wr.Status,
+		PercentComplete: wr.PercentComplete,
+		Terminal:        isTerminalWorkStatus(wr.Status),
+		HTTPStatus:      status,
+	})
+}
+
+func isTerminalWorkStatus(s string) bool {
+	switch strings.ToUpper(s) {
+	case "SUCCEEDED", "FAILED", "CANCELED", "CANCELLED":
+		return true
+	default:
+		return false
+	}
+}
+
+// resolveOp looks up a resource's Create/Update/Delete/Get operation by verb and
+// validates the binding — shared by the CRUD ops.
+func resolveOp(kind, verb string, b execBinding) (resourceContract, httpOp, *providerError) {
+	c, ok := resourceContracts()[kind]
+	if !ok {
+		return resourceContract{}, httpOp{}, &providerError{Class: classValidation, FieldPath: "kind", Message: "no contract for kind " + kind}
+	}
+	if b.Host == "" || b.KeyID == "" || b.ResourceID == "" {
+		return c, httpOp{}, &providerError{Class: classValidation, FieldPath: "binding", Message: "binding.host, binding.key_id and binding.resource_id are required"}
+	}
+	op, ok := c.operations[verb+c.resource]
+	if !ok {
+		return c, httpOp{}, &providerError{Class: classInternal, Message: "no " + verb + " operation for kind " + kind}
+	}
+	return c, op, nil
+}
+
+// ---- observe (implemented: read current state + effective_config) ----
+
+type observeRequest struct {
+	Kind    string      `json:"kind"`
+	Binding execBinding `json:"binding"`
+}
+
+type observation struct {
+	State            map[string]json.RawMessage `json:"state"`            // raw provider state as read
+	EffectiveConfig  map[string]json.RawMessage `json:"effective_config"` // config-surface projection, comparable to intent
+	ProviderMetadata provMeta                   `json:"provider_metadata"`
+}
+
+type provMeta struct {
+	ResourceID   string `json:"resource_id"`
+	Etag         string `json:"etag,omitempty"`
+	OpcRequestID string `json:"opc_request_id,omitempty"`
+	ObservedAt   string `json:"observed_at,omitempty"`
+}
+
+// Observe reads the current provider state with a signed GET (Get<Resource>) and
+// returns the raw state plus effective_config — the config-surface projection
+// that is directly comparable to intent (so plan diffs like against like). The
+// revision (etag) is first-class for optimistic concurrency.
+func Observe(auth, data []byte) ([]byte, error) {
+	var req observeRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return errResult(&providerError{Class: classValidation, Message: "observe-request is not valid JSON: " + err.Error()})
+	}
+	if req.Binding.Host == "" || req.Binding.KeyID == "" || req.Binding.ResourceID == "" {
+		return errResult(&providerError{Class: classValidation, FieldPath: "binding", Message: "binding.host, binding.key_id and binding.resource_id are required"})
+	}
+	c, ok := resourceContracts()[req.Kind]
+	if !ok {
+		return errResult(&providerError{Class: classValidation, FieldPath: "kind", Message: "no contract for kind " + req.Kind})
+	}
+	getOp, ok := c.operations["Get"+c.resource]
+	if !ok {
+		return errResult(&providerError{Class: classInternal, Message: "no Get operation for kind " + req.Kind})
+	}
+
+	path := templatePath(getOp.path, req.Binding.ResourceID)
+	date := nowFunc().Format(ociTimeFormat)
+	status, headers, respBody, err := actuateSigned(getOp.method, req.Binding.Host, path, req.Binding.KeyID, nil, date)
+	if err != nil {
+		return errResult(&providerError{Class: classTransport, Message: err.Error()})
+	}
+	if status == 404 {
+		return errResult(&providerError{Class: classNotFound, ProviderCode: "NotAuthorizedOrNotFound", Message: "resource not found: " + req.Binding.ResourceID})
+	}
+	if status >= 400 {
+		return errResult(&providerError{Class: classProvider, Message: "provider returned HTTP " + strconv.Itoa(status)})
+	}
+
+	var state map[string]json.RawMessage
+	if err := json.Unmarshal(respBody, &state); err != nil {
+		return errResult(&providerError{Class: classProvider, Message: "provider response is not a JSON object"})
+	}
+	return okResult(observation{
+		State:           state,
+		EffectiveConfig: effectiveConfig(c, state),
+		ProviderMetadata: provMeta{
+			ResourceID:   req.Binding.ResourceID,
+			Etag:         headers["etag"],
+			OpcRequestID: headers["opc-request-id"],
+			ObservedAt:   date,
+		},
+	})
+}
+
+// effectiveConfig projects raw provider state onto the config surface: the subset
+// of state fields the contract declares settable. This is the normalized,
+// read-only view comparable to intent — provider-computed fields and operational
+// state are dropped, so a subsequent plan compares like against like.
+func effectiveConfig(c resourceContract, state map[string]json.RawMessage) map[string]json.RawMessage {
+	eff := map[string]json.RawMessage{}
+	for name := range c.fields {
+		if v, ok := state[name]; ok {
+			eff[name] = v
+		}
+	}
+	return eff
+}
+
+// ---- execute (implemented against the relay cic-flow host module, R1/R2) ----
+
+type executeRequest struct {
+	Kind    string        `json:"kind"`
+	Plan    executionPlan `json:"plan"`   // the approved plan (with provider_operations)
+	Config  schemaPayload `json:"config"` // desired config, to render request bodies
+	Binding execBinding   `json:"binding"`
+}
+
+// execBinding carries the provider coordinates the module needs to actuate: the
+// service host, the OCI keyId (public: tenancy/user/fingerprint), and the target
+// resource id for path templating. Not secret; supplied with the intent.
+type execBinding struct {
+	Host       string `json:"host"`        // e.g. iaas.eu-frankfurt-1.oraclecloud.com
+	KeyID      string `json:"key_id"`      // <tenancyOCID>/<userOCID>/<fingerprint>
+	ResourceID string `json:"resource_id"` // ocid1.vcn... — fills {vcnId}/{subnetId} path params
+}
+
+type executionResult struct {
+	Status string          `json:"status"` // succeeded | failed
+	Steps  []executionStep `json:"steps"`
+}
+
+type executionStep struct {
+	Operation    string `json:"operation"`
+	HTTPStatus   int    `json:"http_status,omitempty"`
+	Etag         string `json:"etag,omitempty"`
+	OpcRequestID string `json:"opc_request_id,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
+// nowFunc is the clock, injectable for deterministic tests.
+var nowFunc = func() time.Time { return time.Now().UTC() }
+
+// Execute runs an approved plan verbatim: for each provider_operation it renders
+// the OCI body, builds the draft-cavage canonical string, has the host sign it
+// (cic-flow.sign), assembles the Authorization header, and sends the request
+// (cic-flow.actuate). It stops at the first failing step. The module never sees
+// the key; the host enforces egress + scope from the signed manifest.
+func Execute(auth, data []byte) ([]byte, error) {
+	var req executeRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return errResult(&providerError{Class: classValidation, Message: "execute-request is not valid JSON: " + err.Error()})
+	}
+	if req.Binding.Host == "" || req.Binding.KeyID == "" {
+		return errResult(&providerError{Class: classValidation, FieldPath: "binding", Message: "binding.host and binding.key_id are required"})
+	}
+	c, ok := resourceContracts()[req.Kind]
+	if !ok {
+		return errResult(&providerError{Class: classValidation, FieldPath: "kind", Message: "no contract for kind " + req.Kind})
+	}
+	config, err := decodeObject(req.Config.Data)
+	if err != nil {
+		return errResult(&providerError{Class: classSchema, FieldPath: "config.data", Message: err.Error()})
+	}
+
+	date := nowFunc().Format(ociTimeFormat)
+	result := executionResult{Status: "succeeded"}
+	for _, po := range req.Plan.ProviderOperations {
+		step, fatal := executeOne(c, po, config, req.Binding, date)
+		result.Steps = append(result.Steps, step)
+		if fatal {
+			result.Status = "failed"
+			break
+		}
+	}
+	return okResult(result)
+}
+
+// executeOne runs a single provider operation: render → sign → actuate. fatal is
+// true when the step failed and the plan must stop.
+func executeOne(c resourceContract, po providerOperation, config map[string]json.RawMessage, b execBinding, date string) (executionStep, bool) {
+	step := executionStep{Operation: po.Operation}
+	body := renderBody(c, po, config)
+	path := templatePath(po.Path, b.ResourceID)
+
+	status, headers, _, err := actuateSigned(po.Method, b.Host, path, b.KeyID, body, date)
+	if err != nil {
+		step.Error = err.Error()
+		return step, true
+	}
+	step.HTTPStatus = status
+	step.Etag = headers["etag"]
+	step.OpcRequestID = headers["opc-request-id"]
+	if status >= 400 {
+		step.Error = "provider returned HTTP " + strconv.Itoa(status)
+		return step, true
+	}
+	return step, false
+}
+
+// actuateSigned is the shared sign-then-send core used by execute and observe:
+// build the OCI canonical string, cic-flow.sign it, assemble the Authorization
+// header, cic-flow.actuate, and return the decoded response. The key never
+// enters the guest; the host enforces egress + scope.
+func actuateSigned(method, host, path, keyID string, body []byte, date string) (status int, headers map[string]string, respBody []byte, err error) {
+	canonical, signedHeaders, wire := ociCanonical(method, host, path, date, body)
+
+	sigReq, _ := json.Marshal(map[string]string{"data_base64": base64.StdEncoding.EncodeToString([]byte(canonical))})
+	sigRaw, err := callHostSign(sigReq)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("sign: %s", err.Error())
+	}
+	var sig struct {
+		Signature string `json:"signature"`
+		Error     string `json:"error"`
+	}
+	json.Unmarshal(sigRaw, &sig)
+	if sig.Error != "" || sig.Signature == "" {
+		return 0, nil, nil, fmt.Errorf("sign: %s", firstNonEmpty(sig.Error, "empty signature"))
+	}
+
+	wire["authorization"] = ociAuthorization(keyID, signedHeaders, sig.Signature)
+	actReq, _ := json.Marshal(map[string]interface{}{
+		"method":      method,
+		"url":         "https://" + host + path,
+		"headers":     wire,
+		"body_base64": base64.StdEncoding.EncodeToString(body),
+	})
+	actRaw, err := callHostActuate(actReq)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("actuate: %s", err.Error())
+	}
+	var act struct {
+		Status     int               `json:"status"`
+		Headers    map[string]string `json:"headers"`
+		BodyBase64 string            `json:"body_base64"`
+		Error      string            `json:"error"`
+	}
+	json.Unmarshal(actRaw, &act)
+	if act.Error != "" {
+		return 0, nil, nil, fmt.Errorf("actuate: %s", act.Error)
+	}
+	respBody, _ = base64.StdEncoding.DecodeString(act.BodyBase64)
+	return act.Status, act.Headers, respBody, nil
+}
+
+// renderBody builds the OCI request body for one operation from the desired
+// config: Create carries all settable fields; Update the mutable ones; an action
+// its own field(s); Delete none.
+func renderBody(c resourceContract, po providerOperation, config map[string]json.RawMessage) []byte {
+	if strings.HasPrefix(po.Operation, "Delete") {
+		return nil
+	}
+	fields := map[string]json.RawMessage{}
+	switch {
+	case strings.HasPrefix(po.Operation, "Create"):
+		for name := range c.fields {
+			if v, ok := config[name]; ok {
+				fields[name] = v
+			}
+		}
+	case strings.HasPrefix(po.Operation, "Update"):
+		for name, fd := range c.fields {
+			if fd.policy == "mutable" {
+				if v, ok := config[name]; ok {
+					fields[name] = v
+				}
+			}
+		}
+	default: // action operation (e.g. ChangeVcnCompartment)
+		for name, fd := range c.fields {
+			if fd.policy == "action-managed" && fd.action == po.Operation {
+				if v, ok := config[name]; ok {
+					fields[name] = v
+				}
+			}
+		}
+	}
+	out, _ := json.Marshal(fields)
+	return out
+}
+
+// templatePath replaces each {param} segment with the bound resource id, so a
+// registry path like /vcns/{vcnId} targets the concrete resource.
+func templatePath(path, resourceID string) string {
+	for {
+		i := strings.IndexByte(path, '{')
+		if i < 0 {
+			break
+		}
+		j := strings.IndexByte(path[i:], '}')
+		if j < 0 {
+			break
+		}
+		path = path[:i] + resourceID + path[i+j+1:]
+	}
+	return path
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
