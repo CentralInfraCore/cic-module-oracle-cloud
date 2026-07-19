@@ -788,9 +788,13 @@ func Observe(auth, data []byte) ([]byte, error) {
 	if err := json.Unmarshal(respBody, &state); err != nil {
 		return errResult(&providerError{Class: classProvider, Message: "provider response is not a JSON object"})
 	}
+	// effective_config: the structural config-surface projection, then the
+	// semantic derivations that realize input-only fields from state.
+	eff := effectiveConfig(c, state)
+	applyDerivations(req.Kind, state, eff)
 	return okResult(observation{
 		State:           state,
-		EffectiveConfig: effectiveConfig(c, state),
+		EffectiveConfig: eff,
 		ProviderMetadata: provMeta{
 			ResourceID:   req.Binding.ResourceID,
 			Etag:         headers["etag"],

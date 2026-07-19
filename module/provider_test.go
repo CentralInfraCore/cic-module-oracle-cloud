@@ -269,7 +269,7 @@ func TestExecuteAsyncAndBasePath(t *testing.T) {
 func TestObserve(t *testing.T) {
 	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
 	testCallHostActuate = func(req []byte) ([]byte, error) {
-		vcn := `{"id":"ocid1.vcn..x","compartmentId":"ocid1.compartment..c","displayName":"prod","dnsLabel":"prod","lifecycleState":"AVAILABLE","cidrBlocks":["10.0.0.0/16"],"timeCreated":"2026-07-19T00:00:00Z"}`
+		vcn := `{"id":"ocid1.vcn..x","compartmentId":"ocid1.compartment..c","displayName":"prod","dnsLabel":"prod","lifecycleState":"AVAILABLE","cidrBlocks":["10.0.0.0/16"],"ipv6CidrBlocks":["2603:c020::/48"],"timeCreated":"2026-07-19T00:00:00Z"}`
 		out, _ := json.Marshal(map[string]interface{}{
 			"status":      200,
 			"headers":     map[string]string{"etag": "etag-9", "opc-request-id": "req-9"},
@@ -314,6 +314,13 @@ func TestObserve(t *testing.T) {
 	}
 	if obs.ProviderMetadata.Etag != "etag-9" || obs.ProviderMetadata.ResourceID != "ocid1.vcn..x" {
 		t.Errorf("provider_metadata = %+v, want etag-9 / ocid1.vcn..x", obs.ProviderMetadata)
+	}
+
+	// Semantic correspondence: the input-only isIpv6Enabled is derived from the
+	// non-empty ipv6CidrBlocks state field, so effective_config carries it even
+	// though the read never returns isIpv6Enabled directly.
+	if string(obs.EffectiveConfig["isIpv6Enabled"]) != "true" {
+		t.Errorf("effective_config.isIpv6Enabled = %s, want true (derived from ipv6CidrBlocks)", obs.EffectiveConfig["isIpv6Enabled"])
 	}
 }
 

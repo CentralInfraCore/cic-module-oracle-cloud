@@ -1,0 +1,12 @@
+{
+  "kind": "cic:network:vcn",
+  "doc": "Semantic correspondences the SDK tags cannot express: how an input-only config field is realized as a different output-only state field. Hand-authored (reviewed as code), separate from the generated schema so `make oci.generate` stays idempotent. observe applies these to complete effective_config so it is comparable to intent.",
+  "derivations": [
+    {
+      "field": "isIpv6Enabled",
+      "from": "ipv6CidrBlocks",
+      "rule": "bool-from-nonempty",
+      "doc": "OCI accepts isIpv6Enabled at create but reads it back as the ipv6CidrBlocks list — enabled iff that list is non-empty. Without this, effective_config would omit isIpv6Enabled and a reconciler would see false drift against an intent that sets it."
+    }
+  ]
+}
