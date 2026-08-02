@@ -9,7 +9,7 @@
 # (nats-cli, mod-cache-loader) that do not exist in this template.
 
 .PHONY: golang.all golang.help golang.fmt golang.fmt-check golang.lint golang.vet golang.quality \
-	golang.test golang.coverage golang.coverage-profile golang.coverage-html golang.coverage-threshold \
+	golang.test golang.test.manual-real-oci golang.coverage golang.coverage-profile golang.coverage-html golang.coverage-threshold \
 	golang.vuln golang.deps golang.clean golang.tdd oci.extract.test oci.generate
 
 # Default to showing help
@@ -121,6 +121,23 @@ golang.test: ## Run unit tests (verbose, race)
 		fi; \
 		echo "Test on: $$PKGS"; \
 		GO111MODULE=on GOFLAGS="$(GOFLAGS)" go test $(GO_RACE) -v $$PKGS \
+	)
+
+golang.test.manual-real-oci: ## Run the opt-in real-OCI verification harness (needs OCI_* env vars + REAL_OCI_TEST=1 — see docs/design/manual-verification.md)
+	@if [ -z "$$REAL_OCI_TEST" ]; then \
+		echo "REAL_OCI_TEST is not set — see docs/design/manual-verification.md for required OCI_* env vars."; \
+		exit 1; \
+	fi
+	@echo "NOTE: OCI_KEY_PATH must be reachable *inside* the builder container — the"
+	@echo "default docker-compose.yml does not mount \$$HOME/.oci. Point it at a"
+	@echo "path under the repo (gitignored) or add a volume mount before running this."
+	$(call GO_EXEC, \
+		GO111MODULE=on GOFLAGS="$(GOFLAGS)" \
+		OCI_KEY_PATH="$$OCI_KEY_PATH" OCI_TENANCY_OCID="$$OCI_TENANCY_OCID" \
+		OCI_USER_OCID="$$OCI_USER_OCID" OCI_FINGERPRINT="$$OCI_FINGERPRINT" \
+		OCI_REGION="$$OCI_REGION" OCI_TEST_KIND="$$OCI_TEST_KIND" \
+		OCI_TEST_RESOURCE_ID="$$OCI_TEST_RESOURCE_ID" REAL_OCI_TEST="$$REAL_OCI_TEST" \
+		go test -tags manual_real_oci -run TestManualRealOCI -v ./... \
 	)
 
 golang.coverage: golang.coverage-profile golang.coverage-html ## Run tests with coverage (profile + HTML)
