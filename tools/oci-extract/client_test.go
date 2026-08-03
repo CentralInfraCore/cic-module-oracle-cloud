@@ -1,6 +1,9 @@
 package ociextract
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestExtractClientFile(t *testing.T) {
 	ops, err := ExtractClientFile("testdata/vcn_client.go")
@@ -8,10 +11,10 @@ func TestExtractClientFile(t *testing.T) {
 		t.Fatalf("ExtractClientFile: %v", err)
 	}
 
-	// Three real operations; the helper method (no *Request/*Response, no
-	// HTTPRequest) must be skipped.
-	if len(ops) != 3 {
-		t.Fatalf("got %d operations, want 3: %+v", len(ops), ops)
+	// Four real operations; the helper method (no *Response, no HTTPRequest)
+	// must be skipped.
+	if len(ops) != 4 {
+		t.Fatalf("got %d operations, want 4: %+v", len(ops), ops)
 	}
 
 	byName := map[string]Operation{}
@@ -40,9 +43,13 @@ func TestExtractClientFile(t *testing.T) {
 		t.Errorf("helperNoOp should be skipped (not an operation)")
 	}
 
-	// Sorted by name: CreateVcn, DeleteVcn, GetVcn.
-	if ops[0].Name != "CreateVcn" || ops[1].Name != "DeleteVcn" || ops[2].Name != "GetVcn" {
-		t.Errorf("operations not sorted by name: %s, %s, %s", ops[0].Name, ops[1].Name, ops[2].Name)
+	// Sorted by name: ChangeVcnCompartment, CreateVcn, DeleteVcn, GetVcn.
+	var got []string
+	for _, o := range ops {
+		got = append(got, o.Name)
+	}
+	if want := []string{"ChangeVcnCompartment", "CreateVcn", "DeleteVcn", "GetVcn"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("operations = %v, want %v (sorted by name)", got, want)
 	}
 
 	// Doc comment kept.

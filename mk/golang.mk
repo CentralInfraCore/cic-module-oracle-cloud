@@ -10,7 +10,8 @@
 
 .PHONY: golang.all golang.help golang.fmt golang.fmt-check golang.lint golang.vet golang.quality \
 	golang.test golang.test.manual-real-oci golang.coverage golang.coverage-profile golang.coverage-html golang.coverage-threshold \
-	golang.vuln golang.deps golang.clean golang.tdd oci.extract.test oci.generate
+	golang.vuln golang.deps golang.clean golang.tdd oci.extract.test oci.generate \
+	oci.audit
 
 # Default to showing help
 golang.all: golang.help
@@ -202,3 +203,19 @@ oci.generate: ## Regenerate module/schemas/*.json from the pinned OCI SDK (needs
 			"$$SDK/create_subnet_details.go" "$$SDK/update_subnet_details.go" \
 			"$$SDK/subnet.go" "$$SDK/change_subnet_compartment_details.go" "$$CLIENT" > /app/module/schemas/subnet.json'
 	@echo "OK: module/schemas/*.json regenerated — review the diff and commit"
+
+# ---- Operation-resolution coverage over the whole pinned SDK (roadmap P2.5) ----
+# The extractor's failure mode is silence: an operation it cannot resolve to an
+# HTTP method+path is skipped, so a service can lose operations and still produce
+# a registry that looks complete. This counts the denominator separately and
+# exits 4 if anything is unresolved. NOT a CI gate — it needs network to fetch
+# the SDK; run it when bumping OCI_SDK_VERSION or changing the resolver.
+oci.audit: ## Operation-resolution coverage across every client in the pinned OCI SDK (needs network)
+	@echo "--- Auditing operation resolution across OCI SDK $(OCI_SDK_VERSION) ---"
+	@docker compose exec -T builder sh -eu -o pipefail -c '\
+		export GOPATH=/tmp/ocigp GOMODCACHE=/tmp/ocigp/pkg/mod GOFLAGS=-mod=mod; \
+		cd /tmp && go mod download github.com/oracle/oci-go-sdk/v65@$(OCI_SDK_VERSION); \
+		SDK=/tmp/ocigp/pkg/mod/github.com/oracle/oci-go-sdk/v65@$(OCI_SDK_VERSION); \
+		cd /app/tools/oci-extract && \
+		find "$$SDK" -name "*_client.go" -not -path "*/example/*" | sort > /tmp/oci-clients.txt && \
+		go run ./cmd/oci-extract -audit $$(cat /tmp/oci-clients.txt) | tail -1'
