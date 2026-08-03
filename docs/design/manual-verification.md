@@ -26,10 +26,12 @@ doesn't provide.
 - The relay's real `cic-flow` host functions (Vault Transit signing, egress
   policy, capability-manifest enforcement) — `testCallHostSign`/
   `testCallHostActuate` substitute a local RSA key and a plain `net/http` call.
-- `invoke`, `destroy` — not yet run for real (see coverage table).
-- `execute` is now exercised (Create/Update), but only ever run against an
-  empty, personal/non-production trial tenancy — never against the
-  paynance production tenancy used for the read-only ops above.
+- `invoke` — not yet run for real (see coverage table).
+- `execute`/`destroy` are now exercised (Create/Update/Delete), but only ever
+  run against an empty, personal/non-production trial tenancy, and the
+  resources were torn down again afterward — never run against the paynance
+  production tenancy used for the read-only ops above, and no resource from
+  this harness is left running in either tenancy.
 
 Both of the above are real, separate verification work — see
 [`relay-requirements.md`](relay-requirements.md) for the relay-side gaps.
@@ -43,10 +45,10 @@ Both of the above are real, separate verification work — see
 | `validate` | `cic:network:subnet` | **verified** | Fed a real resource's own `effective_config` back as `intent` — `admissible: true`, both `envelope.well-formed` and `schema-conformance` checked. |
 | `plan` | `cic:network:subnet` | **verified** | Two cases: `desired == observed` → `noop`; one `mutable` field changed (`displayName`) → `update` with a concrete `UpdateSubnet` (`PUT /subnets/{subnetId}`) provider operation. |
 | `poll` | — | **blocked** | Needs a real, still-live OCI Work Request path (from an async mutation's `opc-work-request-id`). None found in the paynance tenancy (`oci work-requests work-request list` / `oci ce work-request list` at the tenancy root both empty — infra predates the retention window). `CreateVcn`/`UpdateVcn` in the trial tenancy both turned out to be **synchronous** (no `opc-work-request-id`), so they didn't produce one either — an OCI resource type whose Create/Update is genuinely async hasn't been tried yet. |
-| `execute` (Create) | `cic:network:vcn` | **verified** | `CreateVcn` against an empty personal trial tenancy (commercial realm) — `http_status: 200`, synchronous, no work request. Resulting resource independently confirmed via `oci network vcn get`. |
-| `execute` (Update) | `cic:network:vcn` | **verified** | `UpdateVcn` (`displayName` change) on the resource just created — `http_status: 200`, new `etag`. **Gotcha**: the first re-`Observe` after this appeared to show the *old* value — this was Go's test-result cache silently replaying the previous identical invocation, not a real failure; `oci network vcn get` and a `-count=1` re-run both confirmed the update took effect immediately. Always pass `-count=1`. |
+| `execute` (Create) | `cic:network:vcn`, `cic:network:subnet` | **verified** | `CreateVcn` then `CreateSubnet` (inside that VCN) against an empty personal trial tenancy (commercial realm) — both `http_status: 200`, synchronous, no work request. Each resource independently confirmed via `oci network vcn/subnet get`. |
+| `execute` (Update) | `cic:network:vcn` | **verified** | `UpdateVcn` (`displayName` change) on the VCN just created — `http_status: 200`, new `etag`. **Gotcha**: the first re-`Observe` after this appeared to show the *old* value — this was Go's test-result cache silently replaying the previous identical invocation, not a real failure; `oci network vcn get` and a `-count=1` re-run both confirmed the update took effect immediately. Always pass `-count=1`. |
+| `execute` (Delete) | `cic:network:vcn`, `cic:network:subnet` | **verified** | `DeleteSubnet` then `DeleteVcn` (order matters — a VCN can't be deleted while a subnet is attached) — both `http_status: 204`, synchronous. Confirmed gone via a 404 on `oci network subnet get` and an empty `oci network vcn list` afterward. Tenancy is empty again. |
 | `invoke` | — | **not run** | Only tried on resource kinds (`Vcn`, `Subnet`) that have no `action-managed` fields wired to a real action in this test session. |
-| `destroy` | — | **not run** | Would delete the resource created above. Not yet done — pending a decision on whether to keep it around for further testing (see the harness's own README note / ask before running). |
 
 ## A concrete finding from `describe`
 
