@@ -60,8 +60,9 @@ Done: [`oci-sdk.lock.yaml`](../../../oci-sdk.lock.yaml) pins
 `github.com/oracle/oci-go-sdk/v65 v65.121.0` at commit
 `c46dec5c0e366f206199c1b44a4e090ee1c9af99`, with the go.sum `h1:` module and
 `go.mod` hashes recorded from the Go checksum transparency log (sum.golang.org) —
-tamper-evident provenance. `extracted_schema_hash` is `null` until the extractor
-(P2.2) fills it. `tests/test_oci_sdk_lock.py` checks the lock's shape and
+tamper-evident provenance. `extracted_schema_hashes` (a map keyed by SDK service
+directory, e.g. `core` — sweep task C) is empty until the extractor (P2.2) fills
+an entry per service. `tests/test_oci_sdk_lock.py` checks the lock's shape and
 internal consistency (version ↔ VCS ref, full commit sha, h1 hash form).
 
 ## P2.2 — Extractor → operation registry · done
@@ -98,10 +99,10 @@ go mod download github.com/oracle/oci-go-sdk/v65@v65.121.0   # into GOMODCACHE
 go run ./cmd/oci-extract "$SDK/core/core_virtualnetwork_client.go"
 ```
 
-`oci-sdk.lock.yaml`'s `extracted_schema_hash` stays `null` until the full,
-per-service extraction file set is pinned (the input to the P2.4 breaking-change
-gate) — filling it from a single client file would not be the artifact that gate
-diffs.
+`oci-sdk.lock.yaml`'s `extracted_schema_hashes[<service>]` stays unset until that
+service's full extraction file set is pinned (the input to the P2.4
+breaking-change gate) — filling it from a single client file would not be the
+artifact that gate diffs.
 
 The target registry entry:
 
@@ -181,18 +182,29 @@ From the registry + model graph, generate:
 Two halves turn OCI's minor-version breakage from a silent runtime failure into a
 caught, reviewable build signal:
 
-- **Integrity (CI, no network).** `oci-sdk.lock.yaml`'s `extracted_schema_hash` is
-  the sha256 of the committed generated schema (`module/schemas/vcn.json`).
-  `tests/test_oci_sdk_lock.py` recomputes it and fails if they diverge — catching
-  a schema change (including one from an SDK bump via `make oci.generate`) that
-  was not re-pinned and reviewed.
-- **Semantic classification.** `oci-extract -diff <old.json> <new.json>`
-  (`tools/oci-extract/diff.go`) classifies the change as **breaking** (a config
-  field removed, a field that became required, a new required field, a type
-  change) or **compatible** (a new optional field, a policy change), and exits 3
-  if any breaking change is present. On an SDK bump the workflow is: `make
-  oci.generate` → `oci-extract -diff` the old vs new schema → on breaking changes,
-  update the adapter + review before re-pinning `extracted_schema_hash`.
+- **Integrity (CI, no network), per service (sweep task C).**
+  `oci-sdk.lock.yaml`'s `extracted_schema_hashes` is a map keyed by SDK service
+  directory (`core`, …), each value the sha256 of that service's committed
+  generated schemas (`module/schemas/<service>/*.json`).
+  `tests/test_oci_sdk_lock.py` recomputes every entry and fails if any diverges —
+  catching a schema change (including one from an SDK bump via `make
+  oci.generate`) that was not re-pinned and reviewed. It also fails if a
+  service directory exists without a pinned entry or vice versa. A single
+  repo-wide hash does not scale once the registry covers more than one
+  service's committed schemas: it would still catch drift, but a reviewer
+  could not tell *which* service changed without diffing the whole
+  `module/schemas/` tree. Per-service hashing keeps that answer in the map key.
+- **Semantic classification, per resource (unchanged).**
+  `oci-extract -diff <old.json> <new.json>` (`tools/oci-extract/diff.go`)
+  classifies the change as **breaking** (a config field removed, a field that
+  became required, a new required field, a type change) or **compatible** (a
+  new optional field, a policy change), and exits 3 if any breaking change is
+  present. This already operated on one resource's schema bundle at a time, so
+  it needed no change for per-service integrity hashing — a service with
+  several committed resources is diffed resource by resource. On an SDK bump
+  the workflow is: `make oci.generate` → `oci-extract -diff` the old vs new
+  schema per resource → on breaking changes, update the adapter + review
+  before re-pinning that service's hash in `extracted_schema_hashes`.
 
 ## P2.5 — Service-agnostic operation and model resolution · done
 
@@ -298,7 +310,7 @@ neither a breaking nor a compatible change to their config schemas, and
 `tools/oci-extract/regression_test.go` freezes their field set, policies, state
 size and operations against a written-out expectation so a future change cannot
 quietly cost them coverage. The regenerated bundles differ only by the additive
-`path_params`, which is why `extracted_schema_hash` was re-pinned.
+`path_params`, which is why `extracted_schema_hashes[core]` was re-pinned.
 
 ## Split, don't monolith
 

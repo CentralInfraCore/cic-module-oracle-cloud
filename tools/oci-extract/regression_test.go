@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// The committed schemas in module/schemas are the only OCI coverage this module
+// The committed schemas in module/schemas/core are the only OCI coverage this module
 // actually ships, and they are generated from a pinned SDK that CI cannot reach
 // (no network). So the guard is a frozen expectation of their surface, written
 // out here rather than derived from the files — a check that read the answer
@@ -99,7 +99,7 @@ var committedSchemas = []resourceExpectation{
 func TestCommittedSchemaCoverageUnchanged(t *testing.T) {
 	for _, want := range committedSchemas {
 		t.Run(want.file, func(t *testing.T) {
-			path := filepath.Join("..", "..", "module", "schemas", want.file)
+			path := filepath.Join("..", "..", "module", "schemas", "core", want.file)
 			raw, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatalf("read %s: %v", path, err)

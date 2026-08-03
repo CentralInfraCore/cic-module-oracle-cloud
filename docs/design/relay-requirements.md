@@ -106,6 +106,75 @@ ProofTrace" (`ffi/src/lib.rs` comments). The mechanism exists on the FFI path.
 WASM guest (R1) — the audit entry must bind to the module hash and the intent.
 Maps to roadmap **P1.4 / P4.2**.
 
+## R5 — Egress host declaration for tenant/domain-resolved endpoints · needed (scoped: `identitydomains` coverage only — does not block the current core/network PoC)
+
+**Need.** A module whose target service resolves its endpoint from tenant or
+deployment configuration at runtime, not from a region/realm template, cannot
+declare that host in a static, build-time-signed capability manifest at all —
+regardless of glob syntax.
+
+**Evidence** (oci-extract-full-sweep, task F — read from the pinned SDK, not
+grepped-and-guessed; and from `CIC-Relay/cmd/relay/cic_flow_manifest_test.go`,
+the only place the egress-glob contract is pinned down in the relay tree):
+
+Of the pinned SDK's 168 service packages, 162 build their host from
+`common.StringToRegion(region).EndpointForTemplate(<name>, <template>)`, where
+`<template>` always ends in the literal `{region}.{secondLevelDomain}` —
+`{secondLevelDomain}` resolves per realm (`common/regions.go`: 21 realms, e.g.
+`oc1`→`oraclecloud.com`, `oc19`→`oraclecloud.eu`, `oc2`/`oc3`→
+`oraclegovcloud.com`, `oc4`→`oraclegovcloud.uk`, `oc8`..`oc52`→
+`oraclecloudN.com`). Every one of these 162 is expressible today, with **no**
+relay change, as one `egress.host` glob entry per realm the module supports —
+`hostGlobMatch` (`cic_flow_manifest_test.go` `TestHostGlobMatch`) matches a
+single leading `*` label against a fixed literal suffix, which is exactly this
+shape. (4 more services — `osubbillingschedule`, `osuborganizationsubscription`,
+`osubsubscription`, `osubusage` — hardcode `https://csaap-e.oracle.com`
+regardless of realm; also expressible today, as one exact-host entry with no
+wildcard.) **None of this needs an R# — it is a module-side `Describe()` fix
+(emit one `egress.host` entry per supported realm instead of one hardcoded
+`*.oraclecloud.com`), left for a follow-up job, not a relay gap.**
+
+Two services do not fit that shape at all:
+
+- `objectstorage` (`objectstorage_client.go:100-111`,
+  `getEndpointTemplatePerRealm`): when
+  `IsOciRealmSpecificServiceEndpointTemplateEnabled` is on **and** the realm is
+  `oc1`, the host is `{namespaceName}.objectstorage.{region}.oci.customer-oci.com`
+  — a *different apex domain* (`customer-oci.com`, not `oraclecloud.com`) with
+  the OCI Object Storage **namespace** (tenant-specific, discovered at runtime
+  via a `GetNamespace` call — not a build-time constant) as the leading label.
+  A manifest entry `*.objectstorage.<region>.oci.customer-oci.com` (one per
+  supported region) *is* expressible with today's single-leading-wildcard glob
+  — the namespace is the only variable, and it sits exactly where `hostGlobMatch`
+  allows a wildcard. This is a **nice-to-have** clarification, not a blocker: a
+  module that declares support for a fixed, enumerable set of regions can list
+  one entry per region without any relay change. It would only become a real
+  gap if a module needed to declare "any region" from one static entry — that
+  needs a second wildcard segment, which `TestHostGlobMatch`'s
+  `{"a.*.com", "a.b.com", false} // infix wildcard rejected` case confirms the
+  current matcher does not support.
+- `identitydomains` (`identitydomains_client.go:29-64`,
+  `NewIdentityDomainsClientWithConfigurationProvider`): the host is not derived
+  from `common.StringToRegion` at all — it is a required `endpoint string`
+  constructor parameter, `client.Host = endpoint` verbatim. Identity Domains
+  (IDCS) endpoints are per-domain URLs assigned when a domain is provisioned
+  (e.g. `idcs-<guid>.identity.oraclecloud.com`), unknowable at module-build
+  time and not derivable from region/realm at all. **No static manifest entry
+  can express this**, with any glob syntax the relay might add — the host is a
+  runtime value, not a build-time constant.
+
+**Ask.** Not a specific implementation (the relay team owns the design, as with
+R2) — the open question is whether/how the capability-manifest model can
+support an egress host that is *bounded but not fully static*: e.g. resolved
+once at `plan` time from the intent, pinned into the signed plan, and enforced
+against that pinned value at `execute` time, rather than checked against a
+manifest glob at load time. This is not required for the current PoC (VCN/
+Subnet live entirely in `core`/network, which resolves the standard way); it
+would block any future module surface that touches `identitydomains`. Maps to
+roadmap **P1.3 / P3.5** (future PoC surface expansion) and
+**docs/design/roadmap.md**'s Phase 5 third-party enablement, since a
+third-party module author has no way to hit this problem today either.
+
 ---
 
 ## How to raise these
