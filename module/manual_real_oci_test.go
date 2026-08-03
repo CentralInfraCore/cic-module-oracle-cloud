@@ -32,11 +32,20 @@ package main
 //   OCI_TENANCY_OCID=ocid1.tenancy... OCI_USER_OCID=ocid1.user... \
 //   OCI_FINGERPRINT=xx:xx:...           OCI_REGION=eu-frankfurt-2 \
 //   OCI_TEST_KIND=cic:network:vcn       OCI_TEST_RESOURCE_ID=ocid1.vcn... \
-//   REAL_OCI_TEST=1 go test -tags manual_real_oci ./module/ -run TestManualRealOCI -v
+//   REAL_OCI_TEST=1 go test -tags manual_real_oci -count=1 ./module/ -run TestManualRealOCI -v
 //
-// Realm note: the Host is built as iaas.<region>.oraclecloud.eu — this
-// targets the EU Sovereign Cloud realm (tenancy OCIDs with an "oc19" realm
-// segment). A commercial-realm ("oc1") tenancy needs oraclecloud.com instead.
+// GOTCHA — always pass -count=1. This test hits live OCI state that changes
+// between runs (e.g. re-Observe after an Execute-driven Update) even when the
+// env vars are byte-identical to a previous invocation. Go's test result
+// cache does not know that "identical inputs" doesn't mean "identical
+// outcome" for a test with real external side effects — without -count=1 it
+// will silently replay a stale cached result instead of re-running.
+//
+// Realm note: the Host is built as iaas.<region>.<OCI_REALM_DOMAIN, default
+// oraclecloud.com>. A commercial-realm ("oc1") tenancy OCID needs the default;
+// an EU Sovereign Cloud realm tenancy ("oc19" in the OCID) needs
+// OCI_REALM_DOMAIN=oraclecloud.eu instead — set it explicitly, this harness
+// does not infer the realm from the OCID.
 
 import (
 	"bytes"
@@ -156,7 +165,7 @@ func TestManualRealOCIObserve(t *testing.T) {
 	req := observeRequest{
 		Kind: kind,
 		Binding: execBinding{
-			Host:       fmt.Sprintf("iaas.%s.oraclecloud.eu", region),
+			Host:       ociHost(region),
 			BasePath:   "/20160918",
 			KeyID:      tenancy + "/" + user + "/" + fingerprint,
 			ResourceID: resourceID,
@@ -210,7 +219,7 @@ func TestManualRealOCIValidate(t *testing.T) {
 	obsReq := observeRequest{
 		Kind: kind,
 		Binding: execBinding{
-			Host:       fmt.Sprintf("iaas.%s.oraclecloud.eu", region),
+			Host:       ociHost(region),
 			BasePath:   "/20160918",
 			KeyID:      tenancy + "/" + user + "/" + fingerprint,
 			ResourceID: resourceID,
@@ -301,7 +310,7 @@ func TestManualRealOCIPlan(t *testing.T) {
 	obsReq := observeRequest{
 		Kind: kind,
 		Binding: execBinding{
-			Host:       fmt.Sprintf("iaas.%s.oraclecloud.eu", region),
+			Host:       ociHost(region),
 			BasePath:   "/20160918",
 			KeyID:      tenancy + "/" + user + "/" + fingerprint,
 			ResourceID: resourceID,
@@ -350,6 +359,104 @@ func TestManualRealOCIPlan(t *testing.T) {
 	eff["displayName"] = nameB
 	changedData, _ := json.Marshal(eff)
 	runPlan("displayName changed", changedData)
+}
+
+// ociHost builds the IAAS host for a region, honoring OCI_REALM_DOMAIN
+// (default oraclecloud.com — the commercial realm) so this harness works
+// against both commercial ("oc1") and EU Sovereign ("oc19", ...) tenancies.
+func ociHost(region string) string {
+	domain := os.Getenv("OCI_REALM_DOMAIN")
+	if domain == "" {
+		domain = "oraclecloud.com"
+	}
+	return fmt.Sprintf("iaas.%s.%s", region, domain)
+}
+
+// TestManualRealOCIExecute runs ONE approved provider_operation for real —
+// e.g. CreateVcn or UpdateVcn — against a live tenancy. Unlike Observe/
+// Validate/Plan, this MUTATES real OCI state: it creates, changes, or (via
+// Delete<Resource>) deletes whatever OCI_EXEC_OPERATION/METHOD/PATH describe.
+// Never run this without knowing exactly which tenancy/compartment/resource
+// it targets — see docs/design/manual-verification.md.
+//
+// Config (env):
+//
+//	OCI_EXEC_OPERATION   e.g. CreateVcn, UpdateVcn, DeleteVcn (registry name)
+//	OCI_EXEC_METHOD      e.g. POST, PUT, DELETE
+//	OCI_EXEC_PATH        e.g. /vcns  or  /vcns/{vcnId} (resourceID fills {..})
+//	OCI_EXEC_CONFIG_JSON the config body fields as a JSON object (renderBody
+//	                     filters it per the op: Create keeps all contract
+//	                     fields present, Update keeps only "mutable" ones)
+//	OCI_TEST_RESOURCE_ID required for Update/Delete paths with a {param};
+//	                     leave unset for Create (the path has none to fill)
+func TestManualRealOCIExecute(t *testing.T) {
+	if os.Getenv("REAL_OCI_TEST") == "" {
+		t.Skip("set REAL_OCI_TEST=1 to run against real OCI")
+	}
+
+	keyPath := os.Getenv("OCI_KEY_PATH")
+	tenancy := os.Getenv("OCI_TENANCY_OCID")
+	user := os.Getenv("OCI_USER_OCID")
+	fingerprint := os.Getenv("OCI_FINGERPRINT")
+	region := os.Getenv("OCI_REGION")
+	resourceID := os.Getenv("OCI_TEST_RESOURCE_ID") // may be "" for Create
+	kind := os.Getenv("OCI_TEST_KIND")
+	operation := os.Getenv("OCI_EXEC_OPERATION")
+	method := os.Getenv("OCI_EXEC_METHOD")
+	path := os.Getenv("OCI_EXEC_PATH")
+	configJSON := os.Getenv("OCI_EXEC_CONFIG_JSON")
+	if keyPath == "" || tenancy == "" || user == "" || fingerprint == "" || region == "" ||
+		kind == "" || operation == "" || method == "" || path == "" || configJSON == "" {
+		t.Fatal("OCI_KEY_PATH, OCI_TENANCY_OCID, OCI_USER_OCID, OCI_FINGERPRINT, OCI_REGION, " +
+			"OCI_TEST_KIND, OCI_EXEC_OPERATION, OCI_EXEC_METHOD, OCI_EXEC_PATH, OCI_EXEC_CONFIG_JSON must all be set")
+	}
+	if !json.Valid([]byte(configJSON)) {
+		t.Fatalf("OCI_EXEC_CONFIG_JSON is not valid JSON: %q", configJSON)
+	}
+
+	rsaKey := loadRSAKey(t, keyPath)
+	wireRealHostCalls(rsaKey)
+
+	execReq := executeRequest{
+		Kind: kind,
+		Plan: executionPlan{
+			ProviderOperations: []providerOperation{
+				{Operation: operation, Method: method, Path: path},
+			},
+		},
+		Config: payloadFor(kind, json.RawMessage(configJSON)),
+		Binding: execBinding{
+			Host:       ociHost(region),
+			BasePath:   "/20160918",
+			KeyID:      tenancy + "/" + user + "/" + fingerprint,
+			ResourceID: resourceID,
+		},
+	}
+	execReqJSON, _ := json.Marshal(execReq)
+
+	resultJSON, err := Execute(nil, execReqJSON)
+	if err != nil {
+		t.Fatalf("Execute returned Go error: %v", err)
+	}
+	fmt.Printf("=== Execute result (%s) ===\n%s\n", operation, resultJSON)
+
+	var wrapper struct {
+		Status string          `json:"status"`
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(resultJSON, &wrapper); err != nil {
+		t.Fatalf("result not valid JSON: %v", err)
+	}
+	if wrapper.Status != "ok" {
+		t.Fatalf("Execute reported status=%s: %s", wrapper.Status, resultJSON)
+	}
+	var er executionResult
+	if err := json.Unmarshal(wrapper.Result, &er); err != nil {
+		t.Fatalf("result.result not valid JSON: %v", err)
+	}
+	if er.Status == "failed" {
+		t.Fatalf("execution failed: %+v", er.Steps)
+	}
 }
 
 // payloadFor wraps raw JSON data into a schemaPayload envelope with a real
