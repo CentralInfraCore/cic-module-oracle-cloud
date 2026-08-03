@@ -118,7 +118,10 @@
   "operations": {
     "ChangeSubnetCompartment": {
       "method": "POST",
-      "path": "/subnets/{subnetId}/actions/changeCompartment"
+      "path": "/subnets/{subnetId}/actions/changeCompartment",
+      "path_params": [
+        "subnetId"
+      ]
     },
     "CreateSubnet": {
       "method": "POST",
@@ -126,15 +129,24 @@
     },
     "DeleteSubnet": {
       "method": "DELETE",
-      "path": "/subnets/{subnetId}"
+      "path": "/subnets/{subnetId}",
+      "path_params": [
+        "subnetId"
+      ]
     },
     "GetSubnet": {
       "method": "GET",
-      "path": "/subnets/{subnetId}"
+      "path": "/subnets/{subnetId}",
+      "path_params": [
+        "subnetId"
+      ]
     },
     "UpdateSubnet": {
       "method": "PUT",
-      "path": "/subnets/{subnetId}"
+      "path": "/subnets/{subnetId}",
+      "path_params": [
+        "subnetId"
+      ]
     }
   },
   "state": {

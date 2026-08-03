@@ -27,20 +27,24 @@ var xCICPolicy = map[string]string{
 	PolicyOutputOnly: "provider-computed",
 }
 
-// ResourceSchemas builds the config and state schemas for a resource. schemaNS
-// is the CIC schema id stem, e.g. "cic:network:vcn" → "cic:network:vcn-config"
-// and "…-state". models is the extracted registry's models.
+// ResourceSchemas builds the config and state schemas for a resource from models
+// alone, using the SDK's name conventions. Prefer ResourceSchemasFrom with a
+// Resolution built from the operation registry: that is the service-agnostic
+// path, and this one cannot see a resource whose create verb is not "Create".
 func ResourceSchemas(models []Model, resource, schemaNS, version string) (config, state map[string]interface{}) {
-	byName := map[string]Model{}
-	for _, m := range models {
-		byName[m.Name] = m
-	}
-	create := byName["Create"+resource+"Details"]
+	return ResourceSchemasFrom(Resolve(models, nil, resource), schemaNS, version)
+}
+
+// ResourceSchemasFrom builds the config and state schemas for a resolved
+// resource. schemaNS is the CIC schema id stem, e.g. "cic:network:vcn" →
+// "cic:network:vcn-config" and "…-state".
+func ResourceSchemasFrom(res Resolution, schemaNS, version string) (config, state map[string]interface{}) {
+	resource, create := res.Resource, res.Create
 
 	// json name -> Field, preferring the read model's type, then create, update,
 	// action — the read model is the most canonical view of a field.
 	info := map[string]Field{}
-	for _, src := range append([]Model{byName[resource], create, byName["Update"+resource+"Details"]}, actionModels(models, resource)...) {
+	for _, src := range append([]Model{res.Read, create, res.Update}, res.Actions...) {
 		for _, f := range src.Fields {
 			if f.JSON == "" {
 				continue
@@ -57,7 +61,7 @@ func ResourceSchemas(models []Model, resource, schemaNS, version string) (config
 		}
 	}
 
-	policies := ResourcePolicy(models, resource)
+	policies := PolicyOf(res)
 
 	configProps := map[string]interface{}{}
 	stateProps := map[string]interface{}{}
@@ -151,40 +155,36 @@ func typeToSchema(goType string) map[string]interface{} {
 	}
 }
 
-// ResourceOperationMap returns the HTTP method+path for the operations a plan
-// references for this resource: Create/Update/Delete<Resource> plus each
-// action-managed field's operation (x-cic-action minus "Details"). Keyed by
-// operation name, so the module can attach the concrete HTTP call to each
-// provider_operation without embedding the whole registry.
-func ResourceOperationMap(operations []Operation, resource string, policies []FieldPolicy) map[string]map[string]string {
-	need := map[string]bool{
-		"Get" + resource:    true, // observe (read)
-		"Create" + resource: true,
-		"Update" + resource: true,
-		"Delete" + resource: true,
-	}
-	for _, p := range policies {
-		if p.Policy == PolicyAction && p.Action != "" {
-			need[strings.TrimSuffix(p.Action, "Details")] = true
+// OperationMap returns the HTTP method+path for the operations a plan references
+// for this resource — its read/create/update/delete lifecycle plus every action
+// that governs a field. Keyed by operation name, so the module can attach the
+// concrete HTTP call to each provider_operation without embedding the whole
+// registry.
+//
+// Each entry carries path_params, the {name} placeholders of its path in order.
+// A consumer must bind every one of them: /vcns/{vcnId} needs only the resource
+// id, but /n/{namespaceName}/b/{bucketName} needs two values and neither is an
+// id. Leaving the list implicit is what made "substitute the resource id into
+// every placeholder" look correct — it is correct only for single-parameter
+// paths, which is 75% of the SDK's Get operations, not all of them.
+func OperationMap(res Resolution) map[string]map[string]interface{} {
+	out := map[string]map[string]interface{}{}
+	add := func(op *Operation) {
+		if op == nil {
+			return
 		}
-	}
-	out := map[string]map[string]string{}
-	for _, op := range operations {
-		if need[op.Name] {
-			out[op.Name] = map[string]string{"method": op.HTTPMethod, "path": op.HTTPPath}
+		e := map[string]interface{}{"method": op.HTTPMethod, "path": op.HTTPPath}
+		if len(op.PathParams) > 0 {
+			e["path_params"] = op.PathParams
 		}
+		out[op.Name] = e
 	}
-	return out
-}
-
-// actionModels returns the Change*/Add*/Remove*…Details models that mention the
-// resource (the action-managed mutation surface).
-func actionModels(models []Model, resource string) []Model {
-	var out []Model
-	for _, m := range models {
-		if actionModelRe.MatchString(m.Name) && strings.Contains(m.Name, resource) {
-			out = append(out, m)
-		}
+	add(res.ReadOp)
+	add(res.CreateOp)
+	add(res.UpdateOp)
+	add(res.DeleteOp)
+	for i := range res.ActionOps {
+		add(&res.ActionOps[i])
 	}
 	return out
 }

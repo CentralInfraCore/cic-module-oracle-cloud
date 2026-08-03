@@ -13,7 +13,6 @@ package ociextract
 import (
 	"regexp"
 	"sort"
-	"strings"
 )
 
 // Field policy classes.
@@ -114,31 +113,18 @@ func jsonNames(m Model) map[string]bool {
 // (the OCI verbs that mutate a resource outside plain Update).
 var actionModelRe = regexp.MustCompile(`^(Change|Add|Remove)\w*Details$`)
 
-// ResourcePolicy selects a resource's Create/Update/Read/action models from a
-// registry by the SDK's naming convention and derives its field policy:
-//
-//	create  = Create<Resource>Details
-//	update  = Update<Resource>Details
-//	read    = <Resource>
-//	actions = (Change|Add|Remove)…Details whose name contains <Resource>
+// ResourcePolicy derives a resource's field policy from models alone, using the
+// SDK's name conventions. Prefer PolicyOf with a Resolution built from the
+// operation registry — see resolve.go for why the name conventions do not hold
+// across services.
 //
 // resource is the read-model name, e.g. "Vcn". Missing models are treated as
 // empty (a resource may legitimately have no Update model).
 func ResourcePolicy(models []Model, resource string) []FieldPolicy {
-	byName := map[string]Model{}
-	for _, m := range models {
-		byName[m.Name] = m
-	}
-	var actions []Model
-	for _, m := range models {
-		if actionModelRe.MatchString(m.Name) && strings.Contains(m.Name, resource) {
-			actions = append(actions, m)
-		}
-	}
-	return DeriveFieldPolicy(
-		byName["Create"+resource+"Details"],
-		byName["Update"+resource+"Details"],
-		byName[resource],
-		actions,
-	)
+	return PolicyOf(Resolve(models, nil, resource))
+}
+
+// PolicyOf derives the field policy of an already-resolved resource.
+func PolicyOf(res Resolution) []FieldPolicy {
+	return DeriveFieldPolicy(res.Create, res.Update, res.Read, res.Actions)
 }

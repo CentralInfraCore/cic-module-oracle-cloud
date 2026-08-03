@@ -5,6 +5,7 @@
 //	go run ./cmd/oci-extract -policy <Resource> <model-file.go> ...
 //	go run ./cmd/oci-extract -schema <Resource> [-ns <id-stem>] <model-file.go> ...
 //	go run ./cmd/oci-extract -diff <old.json> <new.json>   # P2.4, exit 3 if breaking
+//	go run ./cmd/oci-extract -audit <file_client.go> ...   # exit 4 if any op unresolved
 //
 // Default: a *_client.go file yields operations (method + HTTP verb/path +
 // request/response types); any other file yields models (structs → fields),
@@ -19,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	ociextract "github.com/CentralInfraCore/cic-module-oracle-cloud/tools/oci-extract"
@@ -35,6 +37,7 @@ func main() {
 	ns := flag.String("ns", "", "CIC schema id stem for -schema, e.g. cic:network:vcn (default: lower-cased <Resource>)")
 	version := flag.String("schema-version", "v0.1.0", "x-cic-schema-version for -schema output")
 	diff := flag.Bool("diff", false, "classify the change between two schema bundles: -diff <old.json> <new.json> (P2.4). Exit 3 if breaking.")
+	audit := flag.Bool("audit", false, "report operation resolution coverage for the given *_client.go files. Exit 4 if any operation is unresolved.")
 	flag.Parse()
 	files := flag.Args()
 
@@ -66,6 +69,10 @@ func main() {
 		os.Exit(2)
 	}
 
+	if *audit {
+		os.Exit(runAudit(files))
+	}
+
 	if *policyRes != "" || *schemaRes != "" {
 		var models []ociextract.Model
 		var operations []ociextract.Operation
@@ -86,22 +93,29 @@ func main() {
 			}
 			models = append(models, ms...)
 		}
+		resource := *policyRes
+		if resource == "" {
+			resource = *schemaRes
+		}
+		res := ociextract.Resolve(models, operations, resource)
 		if *policyRes != "" {
-			emit(ociextract.ResourcePolicy(models, *policyRes))
+			emit(ociextract.PolicyOf(res))
+			reportUnresolved(res)
 			return
 		}
 		stem := *ns
 		if stem == "" {
 			stem = strings.ToLower(*schemaRes)
 		}
-		config, state := ociextract.ResourceSchemas(models, *schemaRes, stem, *version)
+		config, state := ociextract.ResourceSchemasFrom(res, stem, *version)
 		bundle := map[string]interface{}{"config": config, "state": state}
 		// If a client file was supplied, attach the HTTP method+path for the
 		// operations a plan references (P2.2 → concrete, signable plan).
 		if len(operations) > 0 {
-			bundle["operations"] = ociextract.ResourceOperationMap(operations, *schemaRes, ociextract.ResourcePolicy(models, *schemaRes))
+			bundle["operations"] = ociextract.OperationMap(res)
 		}
 		emit(bundle)
+		reportUnresolved(res)
 		return
 	}
 
@@ -124,6 +138,53 @@ func main() {
 		reg.Models = append(reg.Models, models...)
 	}
 	emit(reg)
+}
+
+// runAudit reports per-file operation-resolution coverage and returns the exit
+// code: 4 when any operation in any file failed to resolve to an HTTP
+// method+path. The totals line is the number the P2.2 claim is made against.
+func runAudit(files []string) int {
+	var candidates, resolved int
+	var bad int
+	for _, path := range files {
+		a, err := ociextract.AuditClientFile(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		candidates += a.Candidates
+		resolved += a.Resolved
+		fmt.Printf("%-72s %4d/%-4d resolved\n", filepath.Base(a.File), a.Resolved, a.Candidates)
+		if len(a.Unresolved) > 0 {
+			bad += len(a.Unresolved)
+			fmt.Printf("    UNRESOLVED: %s\n", strings.Join(a.Unresolved, " "))
+		}
+		if len(a.OrphanPrivate) > 0 {
+			bad += len(a.OrphanPrivate)
+			fmt.Printf("    ORPHAN-PRIVATE: %s\n", strings.Join(a.OrphanPrivate, " "))
+		}
+	}
+	fmt.Printf("TOTAL %d/%d operations resolved, %d missing method/path\n", resolved, candidates, candidates-resolved)
+	if bad > 0 {
+		return 4
+	}
+	return 0
+}
+
+// reportUnresolved writes a resolution's gaps to stderr and exits 5 if there are
+// any. The gaps go to stderr, not into the emitted JSON, so the artifact on
+// stdout stays clean; the non-zero exit is what stops `make oci.generate` from
+// committing a schema whose create surface the extractor could not derive.
+// Emitting such a schema anyway is the failure mode this whole change is about:
+// it looks valid and is not.
+func reportUnresolved(res ociextract.Resolution) {
+	if len(res.Unresolved) == 0 {
+		return
+	}
+	for _, u := range res.Unresolved {
+		fmt.Fprintf(os.Stderr, "unresolved: %s: %s\n", res.Resource, u)
+	}
+	os.Exit(5)
 }
 
 func emit(v interface{}) {

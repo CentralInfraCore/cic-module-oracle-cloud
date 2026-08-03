@@ -110,7 +110,10 @@
   "operations": {
     "ChangeVcnCompartment": {
       "method": "POST",
-      "path": "/vcns/{vcnId}/actions/changeCompartment"
+      "path": "/vcns/{vcnId}/actions/changeCompartment",
+      "path_params": [
+        "vcnId"
+      ]
     },
     "CreateVcn": {
       "method": "POST",
@@ -118,15 +121,24 @@
     },
     "DeleteVcn": {
       "method": "DELETE",
-      "path": "/vcns/{vcnId}"
+      "path": "/vcns/{vcnId}",
+      "path_params": [
+        "vcnId"
+      ]
     },
     "GetVcn": {
       "method": "GET",
-      "path": "/vcns/{vcnId}"
+      "path": "/vcns/{vcnId}",
+      "path_params": [
+        "vcnId"
+      ]
     },
     "UpdateVcn": {
       "method": "PUT",
-      "path": "/vcns/{vcnId}"
+      "path": "/vcns/{vcnId}",
+      "path_params": [
+        "vcnId"
+      ]
     }
   },
   "state": {
