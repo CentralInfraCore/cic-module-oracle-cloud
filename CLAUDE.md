@@ -31,6 +31,11 @@ A teljes terv a [`docs/design/`](docs/design/) alatt:
   state-modell
 - [`docs/design/relay-requirements.md`](docs/design/relay-requirements.md) — a
   relay felé jelzett hiányok (RO, lásd lent)
+- [`docs/design/manual-verification.md`](docs/design/manual-verification.md) —
+  a modul valós OCI ellen ellenőrzött lefedettsége (opt-in harness, `module/manual_real_oci_test.go`)
+- [`docs/design/primitives-alignment.md`](docs/design/primitives-alignment.md) —
+  viszony a `cic-primitives`/`cic-yang` réteghez: miért nincs (még) kötés, és
+  milyen irányba érdemes menni
 - a döntési alap: [`theads/`](theads/)
 
 ## KRITIKUS — a CIC-Relay read-only innen
