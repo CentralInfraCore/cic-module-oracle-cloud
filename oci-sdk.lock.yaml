@@ -23,6 +23,11 @@ provider_dependency:
   module_hash: "h1:1J+5ARgrodrx8kzFy/hxznaoUzz43jr0EestCzEaOHw="
   gomod_hash: "h1:Pzy+BpgkDesvGZXEHgslwhIYobHCPHg6wRta1mWnlqQ="
 
-  # sha256 of the normalized operation registry the extractor produces from this
-  # exact source. Filled by P2.2; a bump that changes it triggers the P2.4 gate.
-  extracted_schema_hash: "sha256:cf77a97ba3e6789986ffcfd26c8db6278d8145550d333a7a1906d64694277951"
+  # sha256 of each service's committed generated schemas (module/schemas/<service>/),
+  # keyed by service directory name. Filled by P2.2; a bump that changes a
+  # service's schemas triggers the P2.4 gate for that service only — a reviewer
+  # sees which service changed from the map key, not just that "something" did.
+  # (oci-extract-full-sweep, task C: a single repo-wide hash does not scale once
+  # the registry covers more than one service's worth of committed schemas.)
+  extracted_schema_hashes:
+    core: "sha256:78f7fcb63c4b325e5087f38231cb6c8b5e675e0da4e7b9f0e608dea32ba2d588"

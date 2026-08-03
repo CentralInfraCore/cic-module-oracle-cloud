@@ -74,3 +74,19 @@ type DeleteVcnResponse struct{}
 func common_Retry(ctx context.Context, req interface{}, fn interface{}) (OCIResponse, error) {
 	return nil, nil
 }
+
+// ChangeVcnCompartment moves a VCN into a different compartment. It is what
+// makes compartmentId action-managed rather than create-only, so the fixture
+// must carry it: without the operation there is nothing for path-based action
+// discovery to find.
+func (client VirtualNetworkClient) ChangeVcnCompartment(ctx context.Context, request ChangeVcnCompartmentRequest) (response ChangeVcnCompartmentResponse, err error) {
+	ociResponse, err := common_Retry(ctx, request, client.changeVcnCompartment)
+	_ = ociResponse
+	return
+}
+
+func (client VirtualNetworkClient) changeVcnCompartment(ctx context.Context, request OCIRequest) (OCIResponse, error) {
+	httpRequest, err := request.HTTPRequest(http.MethodPost, "/vcns/{vcnId}/actions/changeCompartment", nil, nil)
+	_ = httpRequest
+	return nil, err
+}

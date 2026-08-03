@@ -1,6 +1,6 @@
 # Spec — OCI schema pipeline
 
-**Piece:** P2.1–P2.4 · **Status:** todo
+**Piece:** P2.1–P2.5 · **Status:** todo
 
 Turn the OCI Go SDK into a **build-time schema source**. It produces generated
 module code and CIC provider contracts. Nothing Go ships at runtime.
@@ -60,8 +60,9 @@ Done: [`oci-sdk.lock.yaml`](../../../oci-sdk.lock.yaml) pins
 `github.com/oracle/oci-go-sdk/v65 v65.121.0` at commit
 `c46dec5c0e366f206199c1b44a4e090ee1c9af99`, with the go.sum `h1:` module and
 `go.mod` hashes recorded from the Go checksum transparency log (sum.golang.org) —
-tamper-evident provenance. `extracted_schema_hash` is `null` until the extractor
-(P2.2) fills it. `tests/test_oci_sdk_lock.py` checks the lock's shape and
+tamper-evident provenance. `extracted_schema_hashes` (a map keyed by SDK service
+directory, e.g. `core` — sweep task C) is empty until the extractor (P2.2) fills
+an entry per service. `tests/test_oci_sdk_lock.py` checks the lock's shape and
 internal consistency (version ↔ VCS ref, full commit sha, h1 hash form).
 
 ## P2.2 — Extractor → operation registry · done
@@ -78,8 +79,10 @@ comments.
 with its HTTP verb + path and request/response types. The method+path come from
 the private method's `request.HTTPRequest(http.Method*, "<path>", …)` call; the
 public↔private link is the SDK's naming convention (`CreateVcn` ↔ `createVcn`).
-Helper methods without a `*Request`/`*Response` signature and an HTTPRequest call
-are skipped.
+Helper methods without a `*Response` result and a resolvable wire call are
+skipped. (The request object is optional and the wire call has more than one
+shape — see P2.5, which widened both after the narrower test was measured to
+drop an operation.)
 
 The CLI routes `*_client.go` to the operation extractor and any other file to the
 model extractor, emitting a single `{operations, models}` registry as canonical
@@ -96,10 +99,10 @@ go mod download github.com/oracle/oci-go-sdk/v65@v65.121.0   # into GOMODCACHE
 go run ./cmd/oci-extract "$SDK/core/core_virtualnetwork_client.go"
 ```
 
-`oci-sdk.lock.yaml`'s `extracted_schema_hash` stays `null` until the full,
-per-service extraction file set is pinned (the input to the P2.4 breaking-change
-gate) — filling it from a single client file would not be the artifact that gate
-diffs.
+`oci-sdk.lock.yaml`'s `extracted_schema_hashes[<service>]` stays unset until that
+service's full extraction file set is pinned (the input to the P2.4
+breaking-change gate) — filling it from a single client file would not be the
+artifact that gate diffs.
 
 The target registry entry:
 
@@ -179,18 +182,135 @@ From the registry + model graph, generate:
 Two halves turn OCI's minor-version breakage from a silent runtime failure into a
 caught, reviewable build signal:
 
-- **Integrity (CI, no network).** `oci-sdk.lock.yaml`'s `extracted_schema_hash` is
-  the sha256 of the committed generated schema (`module/schemas/vcn.json`).
-  `tests/test_oci_sdk_lock.py` recomputes it and fails if they diverge — catching
-  a schema change (including one from an SDK bump via `make oci.generate`) that
-  was not re-pinned and reviewed.
-- **Semantic classification.** `oci-extract -diff <old.json> <new.json>`
-  (`tools/oci-extract/diff.go`) classifies the change as **breaking** (a config
-  field removed, a field that became required, a new required field, a type
-  change) or **compatible** (a new optional field, a policy change), and exits 3
-  if any breaking change is present. On an SDK bump the workflow is: `make
-  oci.generate` → `oci-extract -diff` the old vs new schema → on breaking changes,
-  update the adapter + review before re-pinning `extracted_schema_hash`.
+- **Integrity (CI, no network), per service (sweep task C).**
+  `oci-sdk.lock.yaml`'s `extracted_schema_hashes` is a map keyed by SDK service
+  directory (`core`, …), each value the sha256 of that service's committed
+  generated schemas (`module/schemas/<service>/*.json`).
+  `tests/test_oci_sdk_lock.py` recomputes every entry and fails if any diverges —
+  catching a schema change (including one from an SDK bump via `make
+  oci.generate`) that was not re-pinned and reviewed. It also fails if a
+  service directory exists without a pinned entry or vice versa. A single
+  repo-wide hash does not scale once the registry covers more than one
+  service's committed schemas: it would still catch drift, but a reviewer
+  could not tell *which* service changed without diffing the whole
+  `module/schemas/` tree. Per-service hashing keeps that answer in the map key.
+- **Semantic classification, per resource (unchanged).**
+  `oci-extract -diff <old.json> <new.json>` (`tools/oci-extract/diff.go`)
+  classifies the change as **breaking** (a config field removed, a field that
+  became required, a new required field, a type change) or **compatible** (a
+  new optional field, a policy change), and exits 3 if any breaking change is
+  present. This already operated on one resource's schema bundle at a time, so
+  it needed no change for per-service integrity hashing — a service with
+  several committed resources is diffed resource by resource. On an SDK bump
+  the workflow is: `make oci.generate` → `oci-extract -diff` the old vs new
+  schema per resource → on breaking changes, update the adapter + review
+  before re-pinning that service's hash in `extracted_schema_hashes`.
+
+## P2.5 — Service-agnostic operation and model resolution · done
+
+P2.2–P2.4 were proven on `vcn` and `subnet`. Both live in **the same service**
+(core/network), so what they established is that the pipeline is not
+*resource*-specific. They could not establish that it is not *service*-specific.
+Measured against the whole pinned SDK, it was: four assumptions held for
+core/network and not for OCI as a whole.
+
+### What broke, and what replaced it
+
+**1. An operation must have a request object.** `requestResponseTypes` demanded
+both a `*Request` parameter and a `*Response` result.
+`IdentityClient.ListRegions(ctx)` has no request object — and so its private half
+builds the wire call with `common.MakeDefaultHTTPRequest` rather than
+`request.HTTPRequest`, because there is no request to call the method on. It was
+dropped silently: 8047 of the SDK's 8048 operations resolved, and nothing said
+which one was missing. Now the `*Response` result is the operation test, the
+request is optional, and the wire-call matcher covers every `common` constructor
+(they share the `(method, path, …)` prefix).
+
+**2. The create verb is "Create", the delete verb is "Delete".** `core.Instance`
+is created by `LaunchInstance` → `LaunchInstanceDetails` and destroyed by
+`TerminateInstance`. `ResourceSchemas` looked up `CreateInstanceDetails`, found
+nothing, and emitted a config schema with **no `required` list at all** and a
+create surface assembled from whatever Update and Read happened to share — a
+schema that validates and is wrong. Across the SDK, 570 of 1217 resources have
+no `Create<R>Details`.
+
+**3. A resource is addressed by one path parameter, and it is its id.**
+`/vcns/{vcnId}` is one placeholder holding the resource id, so substituting the
+resource id into every `{…}` works. `objectstorage.Bucket` is
+`/n/{namespaceName}/b/{bucketName}` — two placeholders, neither an id — and even
+*creating* one needs `{namespaceName}` on the collection path. **323 of the
+SDK's 1481 `Get` operations (21.8%), across 65 of 158 services, have a
+placeholder count other than one.** Nothing in the registry recorded them.
+
+**4. Models are structs.** `ExtractFile` handled `*ast.StructType` only. OCI
+declares **1014 models as interfaces** (470 named `*Details`/`*Base`), choosing
+the concrete shape by a discriminator. Eight resources have their
+`Create<R>Details` declared as an interface; those parsed as absent, producing
+the same silent empty create surface as (2).
+
+### The rule that replaced them
+
+Resolution (`tools/oci-extract/resolve.go`) derives a resource's lifecycle from
+the HTTP surface the SDK declares, not from the identifiers OCI chose:
+
+```
+read       = GET  <readPath>                 (response body is the resource)
+collection = readPath minus its trailing /{param}
+create     = POST <collection>
+update     = PUT  <readPath>, else POST <readPath>
+delete     = DELETE <readPath>
+actions    = POST under <readPath>/…
+```
+
+Each operation's body model comes from its request struct's own
+`contributesTo:"body"` tag, and the read model from the response's
+`presentIn:"body"` — the SDK's own tags, never a name. One convention survives as
+a fallback: when no response models are supplied there is nothing structural to
+match the resource against, so the entry point is `Get<Resource>`; the resolution
+records which route it took in `ReadOpSource`, so the assumption is never hidden.
+
+Operations now carry `path_params`, the placeholders of their path in order, so
+the addressing contract is explicit rather than inferred.
+
+### Silence became signal
+
+The extractor's failure mode was that it skipped what it could not resolve. Two
+gates now make the gap a number and an exit code:
+
+- `oci-extract -audit <client.go>…` counts operation candidates separately from
+  resolved ones and exits **4** if any is unresolved. `make oci.audit` runs it
+  over every client in the pinned SDK.
+- `-schema`/`-policy` report unresolved surfaces on stderr and exit **5**, so
+  `make oci.generate` cannot commit a schema whose create surface was not
+  derived. A polymorphic create model is reported by name, not expanded — the
+  discriminator expansion is deliberately out of scope here.
+
+### Verified against the real pinned SDK
+
+`make oci.audit` on v65.121.0 — 319 client files, 171 services:
+
+```
+TOTAL 8048/8048 operations resolved, 0 missing method/path
+```
+
+Per service in the heterogeneous sample (chosen because each breaks a different
+assumption above, not because each was expected to pass):
+
+| Service | Why it was chosen | Operations |
+|---|---|---|
+| `core` virtualnetwork | the P2.2 baseline — must not regress | 271/271 |
+| `core` compute | Launch/Terminate lifecycle verbs, same package | 129/129 |
+| `identity` | the request-less operation; non-regional service | 145/145 |
+| `objectstorage` | two path parameters, name-keyed, POST update | 56/56 |
+| `database` | polymorphic create bodies, largest surface | 456/456 |
+| `dns` | polymorphic create base beside a concrete create | 54/54 |
+
+`vcn` and `subnet` are unchanged by all of this: `oci-extract -diff` reports
+neither a breaking nor a compatible change to their config schemas, and
+`tools/oci-extract/regression_test.go` freezes their field set, policies, state
+size and operations against a written-out expectation so a future change cannot
+quietly cost them coverage. The regenerated bundles differ only by the additive
+`path_params`, which is why `extracted_schema_hashes[core]` was re-pinned.
 
 ## Split, don't monolith
 

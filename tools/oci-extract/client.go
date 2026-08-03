@@ -16,6 +16,20 @@ package ociextract
 // The public method carries the request/response types; the private method
 // (public name, lower-cased first letter — the SDK's convention) carries the
 // wire method+path in a request.HTTPRequest(<method>, <path>, ...) call.
+//
+// Two shapes in the SDK do NOT fit that description, and both are handled here
+// rather than silently skipped (see docs/design/specs/oci-schema-pipeline.md,
+// "Service-agnostic operation resolution"):
+//
+//   - An operation with no request object at all. IdentityClient.ListRegions
+//     takes only a context, so there is no *Request parameter, and its private
+//     half builds the wire call with common.MakeDefaultHTTPRequest instead of
+//     request.HTTPRequest — no request object exists to carry the method.
+//   - Any other HTTP-request constructor from `common`. They all share the
+//     (method, path, …) argument prefix, so one matcher covers them.
+//
+// A *Response result plus a resolvable method+path is therefore the operation
+// test; the request object is optional.
 
 import (
 	"fmt"
@@ -34,9 +48,15 @@ type Operation struct {
 	Client     string `json:"client"`      // VirtualNetworkClient
 	HTTPMethod string `json:"http_method"` // POST
 	HTTPPath   string `json:"http_path"`   // /vcns
-	Request    string `json:"request"`     // CreateVcnRequest
+	Request    string `json:"request"`     // CreateVcnRequest ("" for request-less operations)
 	Response   string `json:"response"`    // CreateVcnResponse
-	Doc        string `json:"doc,omitempty"`
+	// PathParams are the {name} placeholders of HTTPPath, in path order. A
+	// resource is not always addressed by a single id: object storage's
+	// /n/{namespaceName}/b/{bucketName} needs two, and 22% of the SDK's Get
+	// operations have a count other than one. Emitting them makes the
+	// addressing contract explicit instead of assumed.
+	PathParams []string `json:"path_params,omitempty"`
+	Doc        string   `json:"doc,omitempty"`
 }
 
 // httpVerb maps the net/http Method* selector the SDK uses to the wire verb. A
@@ -47,10 +67,21 @@ var httpVerb = map[string]string{
 	"MethodOptions": "OPTIONS",
 }
 
+// httpRequestFuncs are the `common` constructors that build the wire request.
+// All take (method, path) as their first two arguments, so one matcher covers
+// them; HTTPRequest is the method form on the request object, the rest are
+// package functions used by request-less operations.
+var httpRequestFuncs = map[string]bool{
+	"HTTPRequest":                            true,
+	"MakeDefaultHTTPRequest":                 true,
+	"MakeDefaultHTTPRequestWithTaggedStruct": true,
+}
+
 // ExtractClientFile parses one *_client.go and returns its operations, sorted by
-// name. A public method is included only when its signature names a *Request
-// param and a *Response result and a matching private method carries an
-// HTTPRequest(method, path) call — i.e. a real client operation, not a helper.
+// name. A public method is included when its signature names a *Response result
+// and a matching private method carries a resolvable (method, path) wire call —
+// i.e. a real client operation, not a helper. A *Request parameter is recorded
+// when present but is not required: some operations take no request object.
 func ExtractClientFile(path string) ([]Operation, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
@@ -93,6 +124,7 @@ func ExtractClientFile(path string) ([]Operation, error) {
 			HTTPPath:   http[1],
 			Request:    req,
 			Response:   resp,
+			PathParams: PathParams(http[1]),
 			Doc:        firstSentence(docText(fn.Doc, nil)),
 		})
 	}
@@ -100,8 +132,11 @@ func ExtractClientFile(path string) ([]Operation, error) {
 	return ops, nil
 }
 
-// httpRequestCall finds a `<x>.HTTPRequest(<method>, <path>, ...)` call anywhere
-// in fn's body and returns the resolved verb and unquoted path.
+// httpRequestCall finds a wire-request constructor call — `<x>.HTTPRequest(…)`
+// or one of the `common.MakeDefaultHTTPRequest*` package functions — anywhere in
+// fn's body and returns the resolved verb and unquoted path. All of them share
+// the (method, path, …) argument prefix, so one matcher covers every shape the
+// generated clients use.
 func httpRequestCall(fn *ast.FuncDecl) (verb, path string, found bool) {
 	if fn.Body == nil {
 		return "", "", false
@@ -115,7 +150,7 @@ func httpRequestCall(fn *ast.FuncDecl) (verb, path string, found bool) {
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "HTTPRequest" || len(call.Args) < 2 {
+		if !ok || !httpRequestFuncs[sel.Sel.Name] || len(call.Args) < 2 {
 			return true
 		}
 		verb = httpMethodArg(call.Args[0])
@@ -164,6 +199,11 @@ func stringLit(e ast.Expr) (string, bool) {
 
 // requestResponseTypes reads a public method's signature: a parameter whose type
 // name ends in "Request" and a result whose type name ends in "Response".
+//
+// The *Response result is what makes a method an operation; the *Request
+// parameter is optional, because an operation that needs no input carries none
+// (IdentityClient.ListRegions(ctx) → ListRegionsResponse). Requiring both would
+// silently drop such operations from the registry.
 func requestResponseTypes(fn *ast.FuncDecl) (req, resp string, ok bool) {
 	if fn.Type.Params != nil {
 		for _, p := range fn.Type.Params.List {
@@ -179,7 +219,105 @@ func requestResponseTypes(fn *ast.FuncDecl) (req, resp string, ok bool) {
 			}
 		}
 	}
-	return req, resp, req != "" && resp != ""
+	return req, resp, resp != ""
+}
+
+// ClientAudit is the resolution coverage of one *_client.go: how many methods
+// look like operations, how many got an HTTP method+path, and — by name — the
+// ones that did not.
+//
+// This exists because the extractor's failure mode is silence. A method it
+// cannot resolve is skipped, so a service can lose operations and still produce
+// a registry that looks complete. Counting the denominator separately from the
+// result turns "no error" into a number that can be checked.
+type ClientAudit struct {
+	File       string   `json:"file"`
+	Client     string   `json:"client"`
+	Candidates int      `json:"candidates"` // exported methods whose signature is an operation
+	Resolved   int      `json:"resolved"`   // of those, with an HTTP method+path
+	Unresolved []string `json:"unresolved,omitempty"`
+	// OrphanPrivate are private methods carrying a wire call whose exported
+	// counterpart is missing — an operation the naming convention failed to pair.
+	OrphanPrivate []string `json:"orphan_private,omitempty"`
+}
+
+// AuditClientFile reports the operation-resolution coverage of one *_client.go.
+func AuditClientFile(path string) (ClientAudit, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		return ClientAudit{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	a := ClientAudit{File: path}
+	methods := map[string]*ast.FuncDecl{}
+	httpOf := map[string]bool{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 {
+			continue
+		}
+		methods[fn.Name.Name] = fn
+		if _, _, ok := httpRequestCall(fn); ok {
+			httpOf[fn.Name.Name] = true
+		}
+	}
+	var names []string
+	for name := range methods {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fn := methods[name]
+		if !ast.IsExported(name) {
+			if httpOf[name] {
+				continue // private methods are the wire half, paired below
+			}
+			continue
+		}
+		if _, _, ok := requestResponseTypes(fn); !ok {
+			continue // client plumbing (SetRegion, ConfigurationProvider, …)
+		}
+		a.Candidates++
+		if httpOf[lowerFirst(name)] {
+			a.Resolved++
+			if a.Client == "" {
+				a.Client = receiverType(fn)
+			}
+		} else {
+			a.Unresolved = append(a.Unresolved, name)
+		}
+	}
+	for name := range httpOf {
+		if ast.IsExported(name) {
+			continue
+		}
+		if _, ok := methods[strings.ToUpper(name[:1])+name[1:]]; !ok {
+			a.OrphanPrivate = append(a.OrphanPrivate, name)
+		}
+	}
+	sort.Strings(a.OrphanPrivate)
+	return a, nil
+}
+
+// PathParams returns the {name} placeholders of an HTTP path template, in path
+// order. /n/{namespaceName}/b/{bucketName} → [namespaceName bucketName].
+func PathParams(path string) []string {
+	var out []string
+	for {
+		i := strings.IndexByte(path, '{')
+		if i < 0 {
+			return out
+		}
+		rest := path[i+1:]
+		j := strings.IndexByte(rest, '}')
+		if j < 0 {
+			return out
+		}
+		if name := rest[:j]; name != "" {
+			out = append(out, name)
+		}
+		path = rest[j+1:]
+	}
 }
 
 // receiverType returns the method receiver's type name (VirtualNetworkClient),

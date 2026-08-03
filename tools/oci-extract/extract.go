@@ -38,10 +38,21 @@ type Field struct {
 
 // Model is a named struct and its fields, in source order.
 type Model struct {
-	Name   string  `yaml:"name"`
-	Doc    string  `yaml:"doc,omitempty"`
+	Name string `yaml:"name"`
+	Doc  string `yaml:"doc,omitempty"`
+	// Kind is "interface" for a polymorphic model, empty for a plain struct.
+	// OCI declares 1014 of its models as interfaces with concrete
+	// implementations chosen by a discriminator; those carry no fields, so a
+	// consumer that treated them as an empty struct would emit a resource with
+	// no create surface and no error. Recording the kind makes the gap
+	// reportable — expanding the implementations is a separate step.
+	Kind   string  `yaml:"kind,omitempty"`
 	Fields []Field `yaml:"fields"`
 }
+
+// IsPolymorphic reports whether the model is an interface (no fields of its
+// own; the concrete shape is chosen by a discriminator at runtime).
+func (m Model) IsPolymorphic() bool { return m.Kind == "interface" }
 
 // ExtractFile parses one Go source file and returns its structs as Models,
 // sorted by name for stable output. Comments are kept (go/doc semantics) so a
@@ -64,15 +75,22 @@ func ExtractFile(path string) ([]Model, error) {
 			if !ok {
 				continue
 			}
-			st, ok := ts.Type.(*ast.StructType)
-			if !ok {
-				continue
+			switch t := ts.Type.(type) {
+			case *ast.StructType:
+				models = append(models, Model{
+					Name:   ts.Name.Name,
+					Doc:    docText(ts.Doc, gen.Doc),
+					Fields: extractFields(t),
+				})
+			case *ast.InterfaceType:
+				// Polymorphic model: recorded so a consumer can report it,
+				// never silently mistaken for a struct with no fields.
+				models = append(models, Model{
+					Name: ts.Name.Name,
+					Doc:  docText(ts.Doc, gen.Doc),
+					Kind: "interface",
+				})
 			}
-			models = append(models, Model{
-				Name:   ts.Name.Name,
-				Doc:    docText(ts.Doc, gen.Doc),
-				Fields: extractFields(st),
-			})
 		}
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
