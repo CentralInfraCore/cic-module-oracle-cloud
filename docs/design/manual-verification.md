@@ -94,8 +94,17 @@ to feed into the next `Observe`/`Update`/`Destroy` call.
 **Always pass `-count=1`** — see the `execute (Update)` row above.
 
 Or via the Makefile wrapper (same env vars, exported before the call):
-`make golang.test.manual-real-oci` (read-only ops only; wraps
-`-run TestManualRealOCI`, which does not match `TestManualRealOCIExecute`).
+`make golang.test.manual-real-oci` — read-only ops only, because it runs
+`-run "TestManualRealOCI(Observe|Validate|Plan)$"`.
+
+**Do not rely on a bare `-run TestManualRealOCI` to stay read-only.** Go's
+`-run` pattern is an unanchored regexp, so `TestManualRealOCI` *does* match
+`TestManualRealOCIExecute` — this file previously claimed the opposite, and the
+claim was wrong. What actually keeps a bare run from mutating anything is the
+`OCI_EXEC_*` env guard inside the test: with those unset the Execute test fails
+without issuing a request. If they happen to be set in your shell, a bare
+`-run TestManualRealOCI` **will** mutate. Anchor the pattern, as the Makefile
+target now does.
 
 The harness never prints or persists the private key material — only its file
 path is passed in; the parsed key lives in test-process memory for the

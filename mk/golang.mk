@@ -136,9 +136,11 @@ golang.test.manual-real-oci: ## Run the opt-in real-OCI verification harness (ne
 		GO111MODULE=on GOFLAGS="$(GOFLAGS)" \
 		OCI_KEY_PATH="$$OCI_KEY_PATH" OCI_TENANCY_OCID="$$OCI_TENANCY_OCID" \
 		OCI_USER_OCID="$$OCI_USER_OCID" OCI_FINGERPRINT="$$OCI_FINGERPRINT" \
-		OCI_REGION="$$OCI_REGION" OCI_TEST_KIND="$$OCI_TEST_KIND" \
+		OCI_REGION="$$OCI_REGION" OCI_REALM_DOMAIN="$$OCI_REALM_DOMAIN" \
+		OCI_TEST_KIND="$$OCI_TEST_KIND" \
 		OCI_TEST_RESOURCE_ID="$$OCI_TEST_RESOURCE_ID" REAL_OCI_TEST="$$REAL_OCI_TEST" \
-		go test -tags manual_real_oci -count=1 -run TestManualRealOCI -v ./... \
+		go test -tags manual_real_oci -count=1 \
+			-run "TestManualRealOCI(Observe|Validate|Plan)\$$" -v ./... \
 	)
 
 golang.coverage: golang.coverage-profile golang.coverage-html ## Run tests with coverage (profile + HTML)
