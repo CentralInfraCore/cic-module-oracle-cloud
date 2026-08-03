@@ -14,10 +14,10 @@ import (
 	"strings"
 )
 
-//go:embed schemas/vcn.json
+//go:embed schemas/core/vcn.json
 var vcnSchemaJSON []byte
 
-//go:embed schemas/subnet.json
+//go:embed schemas/core/subnet.json
 var subnetSchemaJSON []byte
 
 // embeddedSchemas is every generated {config, state} bundle compiled in. The

@@ -47,7 +47,7 @@ extraction-time gate to catch it.
 
 **Better order, when/if `cic-primitives` Phase 6 actually lands:** write a
 mechanical *projector* from this module's already-correct, already-generated
-contract (`module/schemas/{vcn,subnet}.json`) into a `ManagedEntity`
+contract (`module/schemas/core/{vcn,subnet}.json`) into a `ManagedEntity`
 specialization — not by hand-authoring one. The extracted contract already
 carries the structured metadata a projection needs:
 

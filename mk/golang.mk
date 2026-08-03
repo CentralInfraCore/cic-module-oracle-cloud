@@ -184,25 +184,32 @@ oci.extract.test: ## Vet + test the OCI schema extractor (tools/oci-extract, P2.
 
 # ---- Regenerate the embedded CIC payload schemas (roadmap P2.3) ----
 # Downloads the pinned OCI SDK (oci-sdk.lock.yaml) into a scratch module cache
-# and regenerates module/schemas/<resource>.json from it. NOT a CI gate — it
-# needs network; the generated JSON is committed so the guest build is offline.
-# The pin here must match oci-sdk.lock.yaml provider_dependency.version.
+# and regenerates module/schemas/<service>/<resource>.json from it. NOT a CI
+# gate — it needs network; the generated JSON is committed so the guest build
+# is offline. The pin here must match oci-sdk.lock.yaml provider_dependency.version.
+#
+# The output directory is the SDK service name (here "core"), not the resource
+# name — this is the unit the P2.4 integrity gate hashes per-service (sweep
+# task C): oci-sdk.lock.yaml's extracted_schema_hashes is a map keyed by this
+# same directory name, so a change to one service's schemas never touches
+# another service's pinned hash.
 OCI_SDK_VERSION ?= v65.121.0
-oci.generate: ## Regenerate module/schemas/*.json from the pinned OCI SDK (needs network)
+oci.generate: ## Regenerate module/schemas/<service>/*.json from the pinned OCI SDK (needs network)
 	@echo "--- Regenerating embedded CIC payload schemas from OCI SDK $(OCI_SDK_VERSION) ---"
 	@docker compose exec -T builder sh -eu -o pipefail -c '\
 		export GOPATH=/tmp/ocigp GOMODCACHE=/tmp/ocigp/pkg/mod GOFLAGS=-mod=mod; \
 		cd /tmp && go mod download github.com/oracle/oci-go-sdk/v65@$(OCI_SDK_VERSION); \
 		SDK=/tmp/ocigp/pkg/mod/github.com/oracle/oci-go-sdk/v65@$(OCI_SDK_VERSION)/core; \
+		mkdir -p /app/module/schemas/core; \
 		cd /app/tools/oci-extract && \
 		CLIENT="$$SDK/core_virtualnetwork_client.go"; \
 		go run ./cmd/oci-extract -schema Vcn -ns cic:network:vcn \
 			"$$SDK/create_vcn_details.go" "$$SDK/update_vcn_details.go" \
-			"$$SDK/vcn.go" "$$SDK/change_vcn_compartment_details.go" "$$CLIENT" > /app/module/schemas/vcn.json; \
+			"$$SDK/vcn.go" "$$SDK/change_vcn_compartment_details.go" "$$CLIENT" > /app/module/schemas/core/vcn.json; \
 		go run ./cmd/oci-extract -schema Subnet -ns cic:network:subnet \
 			"$$SDK/create_subnet_details.go" "$$SDK/update_subnet_details.go" \
-			"$$SDK/subnet.go" "$$SDK/change_subnet_compartment_details.go" "$$CLIENT" > /app/module/schemas/subnet.json'
-	@echo "OK: module/schemas/*.json regenerated — review the diff and commit"
+			"$$SDK/subnet.go" "$$SDK/change_subnet_compartment_details.go" "$$CLIENT" > /app/module/schemas/core/subnet.json'
+	@echo "OK: module/schemas/core/*.json regenerated — review the diff and commit"
 
 # ---- Operation-resolution coverage over the whole pinned SDK (roadmap P2.5) ----
 # The extractor's failure mode is silence: an operation it cannot resolve to an
