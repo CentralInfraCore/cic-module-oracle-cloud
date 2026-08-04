@@ -1,0 +1,126 @@
+{
+  "config": {
+    "$id": "cic:compute:instance-config",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "description": "Intent (config) surface for Instance — the fields a caller may set.",
+    "properties": {
+      "availabilityDomain": {
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "compartmentId": {
+        "type": "string",
+        "x-cic-action": "ChangeInstanceCompartmentDetails",
+        "x-cic-policy": "action-managed"
+      },
+      "displayName": {
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "freeformTags": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "shape": {
+        "type": "string",
+        "x-cic-policy": "mutable"
+      }
+    },
+    "required": [
+      "availabilityDomain",
+      "compartmentId"
+    ],
+    "title": "cic:compute:instance-config",
+    "type": "object",
+    "x-cic-resource": "Instance",
+    "x-cic-schema-version": "v0.1.0"
+  },
+  "operations": {
+    "ChangeInstanceCompartment": {
+      "method": "POST",
+      "path": "/instances/{instanceId}/actions/changeCompartment",
+      "path_params": [
+        "instanceId"
+      ],
+      "role": "action"
+    },
+    "GetInstance": {
+      "method": "GET",
+      "path": "/instances/{instanceId}",
+      "path_params": [
+        "instanceId"
+      ],
+      "role": "read"
+    },
+    "LaunchInstance": {
+      "method": "POST",
+      "path": "/instances",
+      "role": "create"
+    },
+    "TerminateInstance": {
+      "method": "DELETE",
+      "path": "/instances/{instanceId}",
+      "path_params": [
+        "instanceId"
+      ],
+      "role": "delete"
+    },
+    "UpdateInstance": {
+      "method": "PUT",
+      "path": "/instances/{instanceId}",
+      "path_params": [
+        "instanceId"
+      ],
+      "role": "update"
+    }
+  },
+  "state": {
+    "$id": "cic:compute:instance-state",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "description": "Observed (state) surface for Instance — the fields read back from the provider.",
+    "properties": {
+      "availabilityDomain": {
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "compartmentId": {
+        "type": "string",
+        "x-cic-action": "ChangeInstanceCompartmentDetails",
+        "x-cic-policy": "action-managed"
+      },
+      "displayName": {
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "freeformTags": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "id": {
+        "type": "string",
+        "x-cic-policy": "provider-computed"
+      },
+      "lifecycleState": {
+        "type": "string",
+        "x-cic-go-type": "InstanceLifecycleStateEnum",
+        "x-cic-policy": "provider-computed"
+      },
+      "shape": {
+        "type": "string",
+        "x-cic-policy": "mutable"
+      }
+    },
+    "title": "cic:compute:instance-state",
+    "type": "object",
+    "x-cic-resource": "Instance",
+    "x-cic-schema-version": "v0.1.0"
+  }
+}

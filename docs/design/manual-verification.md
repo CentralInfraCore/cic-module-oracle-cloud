@@ -44,7 +44,7 @@ Both of the above are real, separate verification work — see
 | `observe` | `cic:network:vcn`, `cic:network:subnet` | **verified** | Real signed GET against a live tenancy; `state` is confirmed to be OCI's raw response verbatim, `effective_config` the filtered/derived config-surface projection. |
 | `validate` | `cic:network:subnet` | **verified** | Fed a real resource's own `effective_config` back as `intent` — `admissible: true`, both `envelope.well-formed` and `schema-conformance` checked. |
 | `plan` | `cic:network:subnet` | **verified** | Two cases: `desired == observed` → `noop`; one `mutable` field changed (`displayName`) → `update` with a concrete `UpdateSubnet` (`PUT /subnets/{subnetId}`) provider operation. |
-| `poll` | — | **blocked** | Needs a real, still-live OCI Work Request path (from an async mutation's `opc-work-request-id`). None found in the paynance tenancy (`oci work-requests work-request list` / `oci ce work-request list` at the tenancy root both empty — infra predates the retention window). `CreateVcn`/`UpdateVcn` in the trial tenancy both turned out to be **synchronous** (no `opc-work-request-id`), so they didn't produce one either — an OCI resource type whose Create/Update is genuinely async hasn't been tried yet. |
+| `poll` | — | **not run** | `TestManualRealOCIPoll` now exists (env: `OCI_POLL_PATH`, see Usage below) but has not been run for real. Still needs a real, still-live OCI Work Request path (from an async mutation's `opc-work-request-id`). None found in the paynance tenancy (`oci work-requests work-request list` / `oci ce work-request list` at the tenancy root both empty — infra predates the retention window). `CreateVcn`/`UpdateVcn` in the trial tenancy both turned out to be **synchronous** (no `opc-work-request-id`); `LaunchInstance`/`TerminateInstance` do give a real Work Request (measured, `work_request_id` present) — an instance create/terminate is the concrete way to get a live path to poll. |
 | `execute` (Create) | `cic:network:vcn`, `cic:network:subnet` | **verified** | `CreateVcn` then `CreateSubnet` (inside that VCN) against an empty personal trial tenancy (commercial realm) — both `http_status: 200`, synchronous, no work request. Each resource independently confirmed via `oci network vcn/subnet get`. |
 | `execute` (Update) | `cic:network:vcn` | **verified** | `UpdateVcn` (`displayName` change) on the VCN just created — `http_status: 200`, new `etag`. **Gotcha**: the first re-`Observe` after this appeared to show the *old* value — this was Go's test-result cache silently replaying the previous identical invocation, not a real failure; `oci network vcn get` and a `-count=1` re-run both confirmed the update took effect immediately. Always pass `-count=1`. |
 | `execute` (Delete) | `cic:network:vcn`, `cic:network:subnet` | **verified** | `DeleteSubnet` then `DeleteVcn` (order matters — a VCN can't be deleted while a subnet is attached) — both `http_status: 204`, synchronous. Confirmed gone via a 404 on `oci network subnet get` and an empty `oci network vcn list` afterward. Tenancy is empty again. |
@@ -93,9 +93,23 @@ to feed into the next `Observe`/`Update`/`Destroy` call.
 
 **Always pass `-count=1`** — see the `execute (Update)` row above.
 
+`Poll` (read-only — GETs a Work Request, never mutates):
+
+```bash
+# ... same OCI_KEY_PATH/OCI_TENANCY_OCID/OCI_USER_OCID/OCI_FINGERPRINT/OCI_REGION as above, plus:
+OCI_POLL_PATH=/20160918/workRequests/ocid1.workrequest... \
+REAL_OCI_TEST=1 go test -tags manual_real_oci -count=1 -run TestManualRealOCIPoll -v ./module/
+```
+
+`OCI_POLL_PATH` needs the API version prefix — Poll GETs it verbatim, unlike
+`Observe`/`Execute` which prepend `binding.base_path` to a registry path. Get a
+live path from an async execute step's `work_request_id`
+(`LaunchInstance`/`TerminateInstance` give one; `CreateVcn`/`UpdateVcn` don't —
+see the `poll` coverage row above).
+
 Or via the Makefile wrapper (same env vars, exported before the call):
 `make golang.test.manual-real-oci` — read-only ops only, because it runs
-`-run "TestManualRealOCI(Observe|Validate|Plan)$"`.
+`-run "TestManualRealOCI(Observe|Validate|Plan|Poll)$"`.
 
 **Do not rely on a bare `-run TestManualRealOCI` to stay read-only.** Go's
 `-run` pattern is an unanchored regexp, so `TestManualRealOCI` *does* match

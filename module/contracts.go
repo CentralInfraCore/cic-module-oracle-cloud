@@ -32,19 +32,46 @@ type fieldDesc struct {
 	action   string // operation name for action-managed fields, e.g. ChangeVcnCompartment
 }
 
-// httpOp is one operation's HTTP method and path (P2.2 registry).
+// Lifecycle roles carried by the schema's operations map (P2.5,
+// tools/oci-extract/resolve.go RoleRead/RoleCreate/RoleUpdate/RoleDelete/
+// RoleAction is the source of truth these strings must match). An operation's
+// Go name is an SDK naming accident — LaunchInstance creates, TerminateInstance
+// deletes — so lifecycle decisions read this field, never the name.
+const (
+	roleRead   = "read"
+	roleCreate = "create"
+	roleUpdate = "update"
+	roleDelete = "delete"
+	roleAction = "action"
+)
+
+// httpOp is one operation's HTTP method, path, and lifecycle role (P2.2/P2.5
+// registry).
 type httpOp struct {
 	method string
 	path   string
+	role   string
 }
 
 // resourceContract is the settable (config) surface of one resource kind.
 type resourceContract struct {
 	kind       string
-	resource   string // SDK resource name (Vcn), for constructing operation names
 	required   []string
 	fields     map[string]fieldDesc
-	operations map[string]httpOp // operation name -> HTTP method+path
+	operations map[string]httpOp // operation name -> HTTP method+path+role
+}
+
+// opByRole returns the resource's single operation for a CRUD lifecycle role
+// (read/create/update/delete) — exactly one per resource, per
+// tools/oci-extract's Resolution. Action operations are many-per-resource and
+// are looked up by their exact name instead (see fieldDesc.action).
+func (c resourceContract) opByRole(role string) (name string, op httpOp, ok bool) {
+	for n, o := range c.operations {
+		if o.role == role {
+			return n, o, true
+		}
+	}
+	return "", httpOp{}, false
 }
 
 var (
@@ -63,40 +90,55 @@ func resourceContracts() map[string]resourceContract {
 	contractDone = true
 	contractCache = map[string]resourceContract{}
 	for _, raw := range embeddedSchemas {
-		var bundle struct {
-			Config struct {
-				ID         string   `json:"$id"`
-				Resource   string   `json:"x-cic-resource"`
-				Required   []string `json:"required"`
-				Properties map[string]struct {
-					Type   string `json:"type"`
-					Policy string `json:"x-cic-policy"`
-					Action string `json:"x-cic-action"`
-				} `json:"properties"`
-			} `json:"config"`
-			Operations map[string]struct {
-				Method string `json:"method"`
-				Path   string `json:"path"`
-			} `json:"operations"`
-		}
-		if err := json.Unmarshal(raw, &bundle); err != nil || bundle.Config.ID == "" {
+		kind, c, ok := parseContractBundle(raw)
+		if !ok {
 			continue
 		}
-		kind := strings.TrimSuffix(bundle.Config.ID, "-config")
-		fields := make(map[string]fieldDesc, len(bundle.Config.Properties))
-		for name, p := range bundle.Config.Properties {
-			// x-cic-action is the Details model (ChangeVcnCompartmentDetails);
-			// the operation name drops the "Details" suffix.
-			fields[name] = fieldDesc{policy: p.Policy, jsonType: p.Type, action: strings.TrimSuffix(p.Action, "Details")}
-		}
-		ops := make(map[string]httpOp, len(bundle.Operations))
-		for name, o := range bundle.Operations {
-			ops[name] = httpOp{method: o.Method, path: o.Path}
-		}
-		contractCache[kind] = resourceContract{
-			kind: kind, resource: bundle.Config.Resource,
-			required: bundle.Config.Required, fields: fields, operations: ops,
-		}
+		contractCache[kind] = c
 	}
 	return contractCache
+}
+
+// parseContractBundle parses one {config, state, operations} schema bundle (P2.3
+// output, tools/oci-extract/schema.go) into a resourceContract. Factored out of
+// resourceContracts so a test can build a contract from a fixture bundle without
+// routing through the //go:embed-only production cache.
+func parseContractBundle(raw []byte) (kind string, c resourceContract, ok bool) {
+	var bundle struct {
+		Config struct {
+			ID         string   `json:"$id"`
+			Required   []string `json:"required"`
+			Properties map[string]struct {
+				Type   string `json:"type"`
+				Policy string `json:"x-cic-policy"`
+				Action string `json:"x-cic-action"`
+			} `json:"properties"`
+		} `json:"config"`
+		Operations map[string]struct {
+			Method string `json:"method"`
+			Path   string `json:"path"`
+			Role   string `json:"role"`
+		} `json:"operations"`
+	}
+	if err := json.Unmarshal(raw, &bundle); err != nil || bundle.Config.ID == "" {
+		return "", resourceContract{}, false
+	}
+	kind = strings.TrimSuffix(bundle.Config.ID, "-config")
+	fields := make(map[string]fieldDesc, len(bundle.Config.Properties))
+	for name, p := range bundle.Config.Properties {
+		// x-cic-action is the Details model (ChangeVcnCompartmentDetails);
+		// the operation name drops the "Details" suffix.
+		fields[name] = fieldDesc{policy: p.Policy, jsonType: p.Type, action: strings.TrimSuffix(p.Action, "Details")}
+	}
+	ops := make(map[string]httpOp, len(bundle.Operations))
+	for name, o := range bundle.Operations {
+		ops[name] = httpOp{method: o.Method, path: o.Path, role: o.Role}
+	}
+	c = resourceContract{
+		kind:       kind,
+		required:   bundle.Config.Required,
+		fields:     fields,
+		operations: ops,
+	}
+	return kind, c, true
 }
