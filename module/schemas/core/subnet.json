@@ -121,32 +121,37 @@
       "path": "/subnets/{subnetId}/actions/changeCompartment",
       "path_params": [
         "subnetId"
-      ]
+      ],
+      "role": "action"
     },
     "CreateSubnet": {
       "method": "POST",
-      "path": "/subnets"
+      "path": "/subnets",
+      "role": "create"
     },
     "DeleteSubnet": {
       "method": "DELETE",
       "path": "/subnets/{subnetId}",
       "path_params": [
         "subnetId"
-      ]
+      ],
+      "role": "delete"
     },
     "GetSubnet": {
       "method": "GET",
       "path": "/subnets/{subnetId}",
       "path_params": [
         "subnetId"
-      ]
+      ],
+      "role": "read"
     },
     "UpdateSubnet": {
       "method": "PUT",
       "path": "/subnets/{subnetId}",
       "path_params": [
         "subnetId"
-      ]
+      ],
+      "role": "update"
     }
   },
   "state": {

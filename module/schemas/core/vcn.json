@@ -113,32 +113,37 @@
       "path": "/vcns/{vcnId}/actions/changeCompartment",
       "path_params": [
         "vcnId"
-      ]
+      ],
+      "role": "action"
     },
     "CreateVcn": {
       "method": "POST",
-      "path": "/vcns"
+      "path": "/vcns",
+      "role": "create"
     },
     "DeleteVcn": {
       "method": "DELETE",
       "path": "/vcns/{vcnId}",
       "path_params": [
         "vcnId"
-      ]
+      ],
+      "role": "delete"
     },
     "GetVcn": {
       "method": "GET",
       "path": "/vcns/{vcnId}",
       "path_params": [
         "vcnId"
-      ]
+      ],
+      "role": "read"
     },
     "UpdateVcn": {
       "method": "PUT",
       "path": "/vcns/{vcnId}",
       "path_params": [
         "vcnId"
-      ]
+      ],
+      "role": "update"
     }
   },
   "state": {

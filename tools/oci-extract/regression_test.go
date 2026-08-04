@@ -32,6 +32,7 @@ type opExpectation struct {
 	method     string
 	path       string
 	pathParams []string
+	role       string
 }
 
 var committedSchemas = []resourceExpectation{
@@ -56,11 +57,11 @@ var committedSchemas = []resourceExpectation{
 		},
 		stateProps: 19,
 		operations: map[string]opExpectation{
-			"GetVcn":               {"GET", "/vcns/{vcnId}", []string{"vcnId"}},
-			"CreateVcn":            {"POST", "/vcns", nil},
-			"UpdateVcn":            {"PUT", "/vcns/{vcnId}", []string{"vcnId"}},
-			"DeleteVcn":            {"DELETE", "/vcns/{vcnId}", []string{"vcnId"}},
-			"ChangeVcnCompartment": {"POST", "/vcns/{vcnId}/actions/changeCompartment", []string{"vcnId"}},
+			"GetVcn":               {"GET", "/vcns/{vcnId}", []string{"vcnId"}, RoleRead},
+			"CreateVcn":            {"POST", "/vcns", nil, RoleCreate},
+			"UpdateVcn":            {"PUT", "/vcns/{vcnId}", []string{"vcnId"}, RoleUpdate},
+			"DeleteVcn":            {"DELETE", "/vcns/{vcnId}", []string{"vcnId"}, RoleDelete},
+			"ChangeVcnCompartment": {"POST", "/vcns/{vcnId}/actions/changeCompartment", []string{"vcnId"}, RoleAction},
 		},
 	},
 	{
@@ -87,11 +88,11 @@ var committedSchemas = []resourceExpectation{
 		},
 		stateProps: 23,
 		operations: map[string]opExpectation{
-			"GetSubnet":               {"GET", "/subnets/{subnetId}", []string{"subnetId"}},
-			"CreateSubnet":            {"POST", "/subnets", nil},
-			"UpdateSubnet":            {"PUT", "/subnets/{subnetId}", []string{"subnetId"}},
-			"DeleteSubnet":            {"DELETE", "/subnets/{subnetId}", []string{"subnetId"}},
-			"ChangeSubnetCompartment": {"POST", "/subnets/{subnetId}/actions/changeCompartment", []string{"subnetId"}},
+			"GetSubnet":               {"GET", "/subnets/{subnetId}", []string{"subnetId"}, RoleRead},
+			"CreateSubnet":            {"POST", "/subnets", nil, RoleCreate},
+			"UpdateSubnet":            {"PUT", "/subnets/{subnetId}", []string{"subnetId"}, RoleUpdate},
+			"DeleteSubnet":            {"DELETE", "/subnets/{subnetId}", []string{"subnetId"}, RoleDelete},
+			"ChangeSubnetCompartment": {"POST", "/subnets/{subnetId}/actions/changeCompartment", []string{"subnetId"}, RoleAction},
 		},
 	},
 }
@@ -117,6 +118,7 @@ func TestCommittedSchemaCoverageUnchanged(t *testing.T) {
 					Method     string   `json:"method"`
 					Path       string   `json:"path"`
 					PathParams []string `json:"path_params"`
+					Role       string   `json:"role"`
 				} `json:"operations"`
 			}
 			if err := json.Unmarshal(raw, &bundle); err != nil {
@@ -167,6 +169,9 @@ func TestCommittedSchemaCoverageUnchanged(t *testing.T) {
 				}
 				if !reflect.DeepEqual(got.PathParams, wo.pathParams) {
 					t.Errorf("operation %q path_params = %v, want %v", name, got.PathParams, wo.pathParams)
+				}
+				if got.Role != wo.role {
+					t.Errorf("operation %q role = %q, want %q", name, got.Role, wo.role)
 				}
 			}
 			for name := range bundle.Operations {

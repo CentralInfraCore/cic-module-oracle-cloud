@@ -92,9 +92,11 @@ func ResourceSchemasFrom(res Resolution, schemaNS, version string) (config, stat
 	config = schemaDoc(schemaNS+"-config", version,
 		"Intent (config) surface for "+resource+" — the fields a caller may set.",
 		configProps, required)
-	// The SDK resource name, so a consumer can construct operation names by
-	// convention (Create/Update/Delete<Resource>) — used by plan to emit
-	// provider_operations without embedding the full operation registry.
+	// The SDK resource name — descriptive metadata for a human reading the
+	// schema. provider_operations plan against the role-tagged entries in
+	// "operations" (see OperationMap), never against this name: OCI's naming is
+	// not a lifecycle convention (LaunchInstance creates, TerminateInstance
+	// deletes).
 	config["x-cic-resource"] = resource
 	state = schemaDoc(schemaNS+"-state", version,
 		"Observed (state) surface for "+resource+" — the fields read back from the provider.",
@@ -161,30 +163,37 @@ func typeToSchema(goType string) map[string]interface{} {
 // concrete HTTP call to each provider_operation without embedding the whole
 // registry.
 //
-// Each entry carries path_params, the {name} placeholders of its path in order.
-// A consumer must bind every one of them: /vcns/{vcnId} needs only the resource
-// id, but /n/{namespaceName}/b/{bucketName} needs two values and neither is an
-// id. Leaving the list implicit is what made "substitute the resource id into
-// every placeholder" look correct — it is correct only for single-parameter
-// paths, which is 75% of the SDK's Get operations, not all of them.
+// Each entry carries role, the lifecycle role Resolve derived structurally
+// (RoleRead/RoleCreate/RoleUpdate/RoleDelete/RoleAction — see resolve.go). This
+// is the only place a consumer needs to look to tell what an operation does:
+// the operation's Go name is an SDK naming accident (LaunchInstance creates,
+// TerminateInstance deletes) and must not be re-derived from it downstream.
+//
+// Each entry also carries path_params, the {name} placeholders of its path in
+// order. A consumer must bind every one of them: /vcns/{vcnId} needs only the
+// resource id, but /n/{namespaceName}/b/{bucketName} needs two values and
+// neither is an id. Leaving the list implicit is what made "substitute the
+// resource id into every placeholder" look correct — it is correct only for
+// single-parameter paths, which is 75% of the SDK's Get operations, not all of
+// them.
 func OperationMap(res Resolution) map[string]map[string]interface{} {
 	out := map[string]map[string]interface{}{}
-	add := func(op *Operation) {
+	add := func(op *Operation, role string) {
 		if op == nil {
 			return
 		}
-		e := map[string]interface{}{"method": op.HTTPMethod, "path": op.HTTPPath}
+		e := map[string]interface{}{"method": op.HTTPMethod, "path": op.HTTPPath, "role": role}
 		if len(op.PathParams) > 0 {
 			e["path_params"] = op.PathParams
 		}
 		out[op.Name] = e
 	}
-	add(res.ReadOp)
-	add(res.CreateOp)
-	add(res.UpdateOp)
-	add(res.DeleteOp)
+	add(res.ReadOp, RoleRead)
+	add(res.CreateOp, RoleCreate)
+	add(res.UpdateOp, RoleUpdate)
+	add(res.DeleteOp, RoleDelete)
 	for i := range res.ActionOps {
-		add(&res.ActionOps[i])
+		add(&res.ActionOps[i], RoleAction)
 	}
 	return out
 }
