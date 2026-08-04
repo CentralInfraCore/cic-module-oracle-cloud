@@ -13,7 +13,7 @@
 //     cic-flow host module (R1/R2, CIC_Relay#91).
 //   - observe   — implemented: signed GET → raw state + effective_config
 //     projection + revision (etag).
-//   - destroy   — implemented: signed DELETE (Delete<Resource>).
+//   - destroy   — implemented: signed DELETE (the resource's role="delete" op).
 //   - invoke    — implemented: a named action operation with its config body.
 //   - poll      — implemented: signed GET of an async Work Request → lifecycle.
 //
@@ -352,9 +352,11 @@ type providerOperation struct {
 }
 
 // planProviderOps maps the classified operation + changed fields to the concrete
-// OCI operations, by the SDK naming convention (Create/Update/Delete<Resource>)
-// and each action field's own operation (x-cic-action), attaching each one's HTTP
-// method+path from the embedded registry. A replace supersedes everything with
+// OCI operations: the resource's role-tagged create/update/delete operation
+// (whatever the SDK actually calls it — LaunchInstance, TerminateInstance, …,
+// never assumed from a Create/Update/Delete<Resource> name) and each action
+// field's own operation (x-cic-action), attaching each one's HTTP method+path
+// from the embedded registry. A replace supersedes everything with
 // Delete+Create; otherwise a single Update carries the mutable changes and each
 // action field contributes its own operation.
 func planProviderOps(c resourceContract, op string, changed []string) []providerOperation {
@@ -365,13 +367,20 @@ func planProviderOps(c resourceContract, op string, changed []string) []provider
 		}
 		return po
 	}
+	mkRole := func(role, reason string) providerOperation {
+		name, h, ok := c.opByRole(role)
+		if !ok {
+			return providerOperation{Reason: reason}
+		}
+		return providerOperation{Operation: name, Method: h.method, Path: h.path, Reason: reason}
+	}
 	switch op {
 	case "noop":
 		return nil
 	case "replace":
 		return []providerOperation{
-			mk("Delete"+c.resource, "immutable field change requires replacement"),
-			mk("Create"+c.resource, "re-create with the desired configuration"),
+			mkRole(roleDelete, "immutable field change requires replacement"),
+			mkRole(roleCreate, "re-create with the desired configuration"),
 		}
 	}
 	var ops []providerOperation
@@ -388,7 +397,7 @@ func planProviderOps(c resourceContract, op string, changed []string) []provider
 		}
 	}
 	if hasUpdate {
-		ops = append([]providerOperation{mk("Update"+c.resource, "mutable fields changed")}, ops...)
+		ops = append([]providerOperation{mkRole(roleUpdate, "mutable fields changed")}, ops...)
 	}
 	return ops
 }
@@ -569,15 +578,16 @@ type destroyRequest struct {
 	Binding execBinding `json:"binding"`
 }
 
-// Destroy tears down a resource with a signed DELETE (Delete<Resource>). A 404 is
-// reported as not-found (the resource is already gone); otherwise it returns an
-// execution-result with the single delete step.
+// Destroy tears down a resource with a signed DELETE (the resource's role="delete"
+// operation — DeleteVcn, TerminateInstance, …). A 404 is reported as not-found
+// (the resource is already gone); otherwise it returns an execution-result with
+// the single delete step.
 func Destroy(auth, data []byte) ([]byte, error) {
 	var req destroyRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return errResult(&providerError{Class: classValidation, Message: "destroy-request is not valid JSON: " + err.Error()})
 	}
-	c, op, perr := resolveOp(req.Kind, "Delete", req.Binding)
+	opName, op, perr := resolveOp(req.Kind, roleDelete, req.Binding)
 	if perr != nil {
 		return errResult(perr)
 	}
@@ -589,7 +599,7 @@ func Destroy(auth, data []byte) ([]byte, error) {
 		return errResult(&providerError{Class: classNotFound, Message: "resource already gone: " + req.Binding.ResourceID})
 	}
 	step := executionStep{
-		Operation: "Delete" + c.resource, HTTPStatus: status,
+		Operation: opName, HTTPStatus: status,
 		OpcRequestID: headers["opc-request-id"], WorkRequestID: headers["opc-work-request-id"],
 	}
 	result := executionResult{Status: "succeeded"}
@@ -717,21 +727,23 @@ func isTerminalWorkStatus(s string) bool {
 	}
 }
 
-// resolveOp looks up a resource's Create/Update/Delete/Get operation by verb and
-// validates the binding — shared by the CRUD ops.
-func resolveOp(kind, verb string, b execBinding) (resourceContract, httpOp, *providerError) {
+// resolveOp looks up a resource's lifecycle operation by role (read/create/
+// update/delete — see roleRead etc.) and validates the binding — shared by the
+// CRUD ops. Returns the operation's actual registry name (LaunchInstance,
+// TerminateInstance, …), not one assumed from the resource's Go name.
+func resolveOp(kind, role string, b execBinding) (string, httpOp, *providerError) {
 	c, ok := resourceContracts()[kind]
 	if !ok {
-		return resourceContract{}, httpOp{}, &providerError{Class: classValidation, FieldPath: "kind", Message: "no contract for kind " + kind}
+		return "", httpOp{}, &providerError{Class: classValidation, FieldPath: "kind", Message: "no contract for kind " + kind}
 	}
 	if b.Host == "" || b.KeyID == "" || b.ResourceID == "" {
-		return c, httpOp{}, &providerError{Class: classValidation, FieldPath: "binding", Message: "binding.host, binding.key_id and binding.resource_id are required"}
+		return "", httpOp{}, &providerError{Class: classValidation, FieldPath: "binding", Message: "binding.host, binding.key_id and binding.resource_id are required"}
 	}
-	op, ok := c.operations[verb+c.resource]
+	name, op, ok := c.opByRole(role)
 	if !ok {
-		return c, httpOp{}, &providerError{Class: classInternal, Message: "no " + verb + " operation for kind " + kind}
+		return "", httpOp{}, &providerError{Class: classInternal, Message: "no " + role + " operation for kind " + kind}
 	}
-	return c, op, nil
+	return name, op, nil
 }
 
 // ---- observe (implemented: read current state + effective_config) ----
@@ -754,10 +766,11 @@ type provMeta struct {
 	ObservedAt   string `json:"observed_at,omitempty"`
 }
 
-// Observe reads the current provider state with a signed GET (Get<Resource>) and
-// returns the raw state plus effective_config — the config-surface projection
-// that is directly comparable to intent (so plan diffs like against like). The
-// revision (etag) is first-class for optimistic concurrency.
+// Observe reads the current provider state with a signed GET (the resource's
+// role="read" operation) and returns the raw state plus effective_config — the
+// config-surface projection that is directly comparable to intent (so plan
+// diffs like against like). The revision (etag) is first-class for optimistic
+// concurrency.
 func Observe(auth, data []byte) ([]byte, error) {
 	var req observeRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -770,9 +783,9 @@ func Observe(auth, data []byte) ([]byte, error) {
 	if !ok {
 		return errResult(&providerError{Class: classValidation, FieldPath: "kind", Message: "no contract for kind " + req.Kind})
 	}
-	getOp, ok := c.operations["Get"+c.resource]
+	_, getOp, ok := c.opByRole(roleRead)
 	if !ok {
-		return errResult(&providerError{Class: classInternal, Message: "no Get operation for kind " + req.Kind})
+		return errResult(&providerError{Class: classInternal, Message: "no read operation for kind " + req.Kind})
 	}
 
 	path := opPath(req.Binding, getOp.path)
@@ -1019,21 +1032,24 @@ func actuateSigned(method, host, path, keyID string, body []byte, date, ifMatch 
 }
 
 // renderBody builds the OCI request body for one operation from the desired
-// config: Create carries all settable fields; Update the mutable ones; an action
-// its own field(s); Delete none.
+// config, keyed by the operation's lifecycle role (from the embedded registry,
+// never from its Go name — LaunchInstance is role="create", TerminateInstance
+// is role="delete"): create carries all settable fields; update the mutable
+// ones; an action its own field(s); delete none.
 func renderBody(c resourceContract, po providerOperation, config map[string]json.RawMessage) []byte {
-	if strings.HasPrefix(po.Operation, "Delete") {
+	role := c.operations[po.Operation].role
+	if role == roleDelete {
 		return nil
 	}
 	fields := map[string]json.RawMessage{}
-	switch {
-	case strings.HasPrefix(po.Operation, "Create"):
+	switch role {
+	case roleCreate:
 		for name := range c.fields {
 			if v, ok := config[name]; ok {
 				fields[name] = v
 			}
 		}
-	case strings.HasPrefix(po.Operation, "Update"):
+	case roleUpdate:
 		for name, fd := range c.fields {
 			if fd.policy == "mutable" {
 				if v, ok := config[name]; ok {
@@ -1041,7 +1057,7 @@ func renderBody(c resourceContract, po providerOperation, config map[string]json
 				}
 			}
 		}
-	default: // action operation (e.g. ChangeVcnCompartment)
+	default: // action operation (e.g. ChangeVcnCompartment); keyed by exact name
 		for name, fd := range c.fields {
 			if fd.policy == "action-managed" && fd.action == po.Operation {
 				if v, ok := config[name]; ok {

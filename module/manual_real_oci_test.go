@@ -13,11 +13,10 @@ package main
 //
 // WHAT THIS DOES NOT COVER — see docs/design/manual-verification.md for the
 // full picture: it never runs through the actual module.wasm/wazero/ABI-
-// dispatch path (abi.go), never exercises the relay's real cic-flow host
+// dispatch path (abi.go), and never exercises the relay's real cic-flow host
 // functions (Vault signing, egress-policy enforcement, capability-manifest
-// checks), and only calls read-only/pure ops (describe, observe, validate,
-// plan) — never execute/invoke/destroy, which would actually mutate the
-// target OCI tenancy.
+// checks). Describe/Observe/Validate/Plan/Poll never mutate; Execute/Destroy/
+// Invoke do — see the warning on TestManualRealOCIExecute before running one.
 //
 // ISOLATION — double-gated, on purpose, so a plain `go test ./...` (no build
 // tags) or `make golang.test` never sees or runs this file:
@@ -456,6 +455,73 @@ func TestManualRealOCIExecute(t *testing.T) {
 	}
 	if er.Status == "failed" {
 		t.Fatalf("execution failed: %+v", er.Steps)
+	}
+}
+
+// TestManualRealOCIPoll GETs a real OCI Work Request and reports its lifecycle
+// (poll's "implemented" status in provider.go's header had never been run
+// against real OCI before this test — see docs/design/manual-verification.md).
+// Read-only: it never mutates. It needs a still-live Work Request path — an
+// async op's execute step surfaces one in work_request_id (see
+// TestManualRealOCIExecute); CreateVcn/UpdateVcn are synchronous and never
+// produce one, but LaunchInstance/TerminateInstance do (measured — see
+// docs/design/manual-verification.md).
+//
+// Config (env):
+//
+//	OCI_POLL_PATH   the Work Request GET path, INCLUDING the API version
+//	                prefix (Poll does not prepend binding.base_path — it GETs
+//	                this path verbatim), e.g.
+//	                /20160918/workRequests/ocid1.workrequest.oc1...
+func TestManualRealOCIPoll(t *testing.T) {
+	if os.Getenv("REAL_OCI_TEST") == "" {
+		t.Skip("set REAL_OCI_TEST=1 to run against real OCI")
+	}
+
+	keyPath := os.Getenv("OCI_KEY_PATH")
+	tenancy := os.Getenv("OCI_TENANCY_OCID")
+	user := os.Getenv("OCI_USER_OCID")
+	fingerprint := os.Getenv("OCI_FINGERPRINT")
+	region := os.Getenv("OCI_REGION")
+	pollPath := os.Getenv("OCI_POLL_PATH")
+	if keyPath == "" || tenancy == "" || user == "" || fingerprint == "" || region == "" || pollPath == "" {
+		t.Fatal("OCI_KEY_PATH, OCI_TENANCY_OCID, OCI_USER_OCID, OCI_FINGERPRINT, OCI_REGION, OCI_POLL_PATH must all be set")
+	}
+
+	rsaKey := loadRSAKey(t, keyPath)
+	wireRealHostCalls(rsaKey)
+
+	pollReq := pollRequest{
+		Binding: execBinding{
+			Host:  ociHost(region),
+			KeyID: tenancy + "/" + user + "/" + fingerprint,
+		},
+		Path: pollPath,
+	}
+	pollReqJSON, _ := json.Marshal(pollReq)
+
+	resultJSON, err := Poll(nil, pollReqJSON)
+	if err != nil {
+		t.Fatalf("Poll returned Go error: %v", err)
+	}
+	fmt.Printf("=== Poll result ===\n%s\n", resultJSON)
+
+	var wrapper struct {
+		Status string          `json:"status"`
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(resultJSON, &wrapper); err != nil {
+		t.Fatalf("result not valid JSON: %v", err)
+	}
+	if wrapper.Status != "ok" {
+		t.Fatalf("Poll reported status=%s: %s", wrapper.Status, resultJSON)
+	}
+	var pr pollResult
+	if err := json.Unmarshal(wrapper.Result, &pr); err != nil {
+		t.Fatalf("result.result not valid JSON: %v", err)
+	}
+	if pr.WorkStatus == "" {
+		t.Fatalf("poll result has no work_status: %+v", pr)
 	}
 }
 
