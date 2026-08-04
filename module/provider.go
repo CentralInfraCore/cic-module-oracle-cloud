@@ -705,14 +705,25 @@ func Poll(auth, data []byte) ([]byte, error) {
 	if status >= 400 {
 		return errResult(ociError(status, respBody))
 	}
+	// percentComplete arrives as a JSON float ("percentComplete": 100.0), which an
+	// int field cannot hold: encoding/json records a type error and leaves that
+	// one field zero while still filling the rest of the struct. Decoding it as
+	// float64 matches the wire; pollResult keeps it an int because progress is a
+	// whole percent to every caller.
 	var wr struct {
-		Status          string `json:"status"`
-		PercentComplete int    `json:"percentComplete"`
+		Status          string  `json:"status"`
+		PercentComplete float64 `json:"percentComplete"`
 	}
-	json.Unmarshal(respBody, &wr)
+	// Not discarded: dropping this error is what let a wrong value look real.
+	if err := json.Unmarshal(respBody, &wr); err != nil {
+		return errResult(&providerError{
+			Class:   classProvider,
+			Message: "work-request response could not be decoded: " + err.Error(),
+		})
+	}
 	return okResult(pollResult{
 		WorkStatus:      wr.Status,
-		PercentComplete: wr.PercentComplete,
+		PercentComplete: int(wr.PercentComplete),
 		Terminal:        isTerminalWorkStatus(wr.Status),
 		HTTPStatus:      status,
 	})

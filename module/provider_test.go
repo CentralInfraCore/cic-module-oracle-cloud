@@ -549,7 +549,12 @@ func TestInvoke(t *testing.T) {
 func TestPoll(t *testing.T) {
 	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
 	testCallHostActuate = func(req []byte) ([]byte, error) {
-		wr := `{"status":"SUCCEEDED","percentComplete":100}`
+		// A FLOAT, because that is what OCI sends. Measured against a live work
+		// request: `oci work-requests work-request get` reports 100.0. This
+		// fixture said 100, and that is exactly why the test stayed green while
+		// Poll returned percent_complete 0 for a completed request — an int
+		// field cannot hold 100.0, and the Unmarshal error was discarded.
+		wr := `{"status":"SUCCEEDED","percentComplete":100.0}`
 		out, _ := json.Marshal(map[string]interface{}{"status": 200, "headers": map[string]string{}, "body_base64": base64.StdEncoding.EncodeToString([]byte(wr))})
 		return out, nil
 	}
@@ -565,5 +570,25 @@ func TestPoll(t *testing.T) {
 	json.Unmarshal(res.Result, &pr)
 	if pr.WorkStatus != "SUCCEEDED" || pr.PercentComplete != 100 || !pr.Terminal {
 		t.Errorf("poll result = %+v, want SUCCEEDED/100/terminal", pr)
+	}
+}
+
+// TestPollUndecodableBodyIsAnError pins the second half of the same defect: the
+// decode error used to be discarded, so a body Poll could not read still came
+// back as a successful result with zeroed fields. A caller cannot tell that from
+// a work request genuinely at 0%.
+func TestPollUndecodableBodyIsAnError(t *testing.T) {
+	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
+	testCallHostActuate = func(req []byte) ([]byte, error) {
+		out, _ := json.Marshal(map[string]interface{}{"status": 200, "headers": map[string]string{}, "body_base64": base64.StdEncoding.EncodeToString([]byte(`{"status":`))})
+		return out, nil
+	}
+	defer func() { testCallHostSign = nil; testCallHostActuate = nil }()
+
+	req, _ := json.Marshal(pollRequest{Binding: execBinding{Host: "h", KeyID: "k"}, Path: "/20160918/workRequests/ocid1.wr..a"})
+	out, _ := Poll(nil, req)
+	res := decodeResult(t, out)
+	if res.Status != "error" {
+		t.Fatalf("poll status = %s, want error for an undecodable body (raw %s)", res.Status, out)
 	}
 }
