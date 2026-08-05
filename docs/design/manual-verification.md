@@ -26,12 +26,17 @@ doesn't provide.
 - The relay's real `cic-flow` host functions (Vault Transit signing, egress
   policy, capability-manifest enforcement) — `testCallHostSign`/
   `testCallHostActuate` substitute a local RSA key and a plain `net/http` call.
-- `invoke` — not yet run for real (see coverage table).
-- `execute`/`destroy` are now exercised (Create/Update/Delete), but only ever
-  run against an empty, personal/non-production trial tenancy, and the
-  resources were torn down again afterward — never run against the paynance
-  production tenancy used for the read-only ops above, and no resource from
-  this harness is left running in either tenancy.
+- `invoke` — not yet run for real (see coverage table). Running it for real
+  needs a second compartment to move a resource into/out of (e.g.
+  `ChangeInstanceCompartment`) — the trial tenancy this harness otherwise uses
+  has none (root compartment only).
+- `destroy` — `TestManualRealOCIDestroy` now exists (calls `Destroy()` itself,
+  not `Execute()` — see the coverage row) but has not yet been run for real.
+- `execute` is exercised (Create/Update/Delete), but only ever run against an
+  empty, personal/non-production trial tenancy, and the resources were torn
+  down again afterward — never run against the paynance production tenancy
+  used for the read-only ops above, and no resource from this harness is left
+  running in either tenancy.
 
 Both of the above are real, separate verification work — see
 [`relay-requirements.md`](relay-requirements.md) for the relay-side gaps.
@@ -44,11 +49,13 @@ Both of the above are real, separate verification work — see
 | `observe` | `cic:network:vcn`, `cic:network:subnet` | **verified** | Real signed GET against a live tenancy; `state` is confirmed to be OCI's raw response verbatim, `effective_config` the filtered/derived config-surface projection. |
 | `validate` | `cic:network:subnet` | **verified** | Fed a real resource's own `effective_config` back as `intent` — `admissible: true`, both `envelope.well-formed` and `schema-conformance` checked. |
 | `plan` | `cic:network:subnet` | **verified** | Two cases: `desired == observed` → `noop`; one `mutable` field changed (`displayName`) → `update` with a concrete `UpdateSubnet` (`PUT /subnets/{subnetId}`) provider operation. |
-| `poll` | — | **not run** | `TestManualRealOCIPoll` now exists (env: `OCI_POLL_PATH`, see Usage below) but has not been run for real. Still needs a real, still-live OCI Work Request path (from an async mutation's `opc-work-request-id`). None found in the paynance tenancy (`oci work-requests work-request list` / `oci ce work-request list` at the tenancy root both empty — infra predates the retention window). `CreateVcn`/`UpdateVcn` in the trial tenancy both turned out to be **synchronous** (no `opc-work-request-id`); `LaunchInstance`/`TerminateInstance` do give a real Work Request (measured, `work_request_id` present) — an instance create/terminate is the concrete way to get a live path to poll. |
+| `poll` | — (Work Request, kind-agnostic) | **verified** | `TestManualRealOCIPoll` run against a live `LaunchInstance` Work Request, 2026-08-04: `work_status: SUCCEEDED`, `terminal: true`. Found and fixed a real bug on this first run — `percent_complete` was always `0` (OCI sends `percentComplete` as a JSON float; the struct field was an `int`, so `encoding/json` silently zeroed it and the decode error was discarded) — see commit `4e577c8`. Fixed and re-verified: `percent_complete: 100` alongside `SUCCEEDED`. |
 | `execute` (Create) | `cic:network:vcn`, `cic:network:subnet` | **verified** | `CreateVcn` then `CreateSubnet` (inside that VCN) against an empty personal trial tenancy (commercial realm) — both `http_status: 200`, synchronous, no work request. Each resource independently confirmed via `oci network vcn/subnet get`. |
 | `execute` (Update) | `cic:network:vcn` | **verified** | `UpdateVcn` (`displayName` change) on the VCN just created — `http_status: 200`, new `etag`. **Gotcha**: the first re-`Observe` after this appeared to show the *old* value — this was Go's test-result cache silently replaying the previous identical invocation, not a real failure; `oci network vcn get` and a `-count=1` re-run both confirmed the update took effect immediately. Always pass `-count=1`. |
 | `execute` (Delete) | `cic:network:vcn`, `cic:network:subnet` | **verified** | `DeleteSubnet` then `DeleteVcn` (order matters — a VCN can't be deleted while a subnet is attached) — both `http_status: 204`, synchronous. Confirmed gone via a 404 on `oci network subnet get` and an empty `oci network vcn list` afterward. Tenancy is empty again. |
-| `invoke` | — | **not run** | Only tried on resource kinds (`Vcn`, `Subnet`) that have no `action-managed` fields wired to a real action in this test session. |
+| `destroy` | — | **not run** | `TestManualRealOCIDestroy` now exists (`module/manual_real_oci_test.go`) and calls `Destroy()` directly — the codepath every prior delete test bypassed by going through `Execute(OCI_EXEC_OPERATION=Delete…)` instead. Unit/fixture-level only so far; env-guard confirmed to skip cleanly with no network call when `REAL_OCI_TEST` is unset. Not yet run against real OCI — see `output/orchestrator-verification.md` (cic-factory job `oci-instance-lifecycle-coverage`) for the exact run recipe. |
+| `invoke` | — | **not run** | `TestManualRealOCIInvoke` now exists. Only tried on resource kinds (`Vcn`, `Subnet`) that have no `action-managed` fields wired to a real action in prior test sessions; `cic:compute:instance` adds one (`ChangeInstanceCompartment`), but running it needs a second compartment the trial tenancy does not have. Env-guard confirmed to skip cleanly with no network call. |
+| `cic:compute:instance` schema | n/a (extraction, no OCI call) | **verified** | `make oci.generate` now also emits `module/schemas/core/instance.json`; the extractor resolves `LaunchInstance→create`, `TerminateInstance→delete`, `UpdateInstance→update`, `ChangeInstanceCompartment→action` from the SDK's own HTTP surface (`tools/oci-extract/resolve.go`), matching the P2.5 audit. `describe()`'s `resource_kinds` includes `cic:compute:instance` (measured via `TestManualDescribe`); `required_capabilities.egress_hosts` is unchanged (`["*.oraclecloud.com"]` — a single wildcard declared once in `Describe()`, not derived per resource kind). |
 
 ## A concrete finding from `describe`
 
@@ -107,15 +114,46 @@ live path from an async execute step's `work_request_id`
 (`LaunchInstance`/`TerminateInstance` give one; `CreateVcn`/`UpdateVcn` don't —
 see the `poll` coverage row above).
 
+`Destroy` (mutating, irreversible — see the warning on
+`TestManualRealOCIDestroy` before running this):
+
+```bash
+# ... same OCI_KEY_PATH/OCI_TENANCY_OCID/OCI_USER_OCID/OCI_FINGERPRINT/OCI_REGION as above, plus:
+OCI_TEST_KIND=cic:compute:instance OCI_TEST_RESOURCE_ID=ocid1.instance... \
+REAL_OCI_TEST=1 go test -tags manual_real_oci -count=1 -run TestManualRealOCIDestroy -v ./module/
+```
+
+Unlike the `execute (Delete)` row above (which drives deletion through
+`Execute(OCI_EXEC_OPERATION=Delete<Resource>)`), this calls `Destroy()`
+itself — the codepath that resolves the resource's role="delete" operation
+from its own embedded contract (`resolveOp`), rather than trusting a
+caller-supplied operation name. This is the codepath that writes the
+operation label into the actual ProofTrace step in production.
+
+`Invoke` (mutating — runs a named action operation; needs a target the action
+is actually valid for, e.g. a second compartment for
+`ChangeInstanceCompartment`):
+
+```bash
+# ... same OCI_KEY_PATH/OCI_TENANCY_OCID/OCI_USER_OCID/OCI_FINGERPRINT/OCI_REGION/OCI_TEST_KIND/OCI_TEST_RESOURCE_ID as above, plus:
+OCI_INVOKE_OPERATION=ChangeInstanceCompartment \
+OCI_INVOKE_CONFIG_JSON='{"compartmentId":"ocid1.compartment...."}' \
+REAL_OCI_TEST=1 go test -tags manual_real_oci -count=1 -run TestManualRealOCIInvoke -v ./module/
+```
+
 Or via the Makefile wrapper (same env vars, exported before the call):
 `make golang.test.manual-real-oci` — read-only ops only, because it runs
-`-run "TestManualRealOCI(Observe|Validate|Plan|Poll)$"`.
+`-run "TestManualRealOCI(Observe|Validate|Plan|Poll)$"`. `Destroy`/`Invoke` have
+no Makefile target on purpose (see the note in `mk/golang.mk`) — run them
+directly with the commands above, deliberately, one at a time.
 
 **Do not rely on a bare `-run TestManualRealOCI` to stay read-only.** Go's
 `-run` pattern is an unanchored regexp, so `TestManualRealOCI` *does* match
-`TestManualRealOCIExecute` — this file previously claimed the opposite, and the
-claim was wrong. What actually keeps a bare run from mutating anything is the
-`OCI_EXEC_*` env guard inside the test: with those unset the Execute test fails
+`TestManualRealOCIExecute`, `TestManualRealOCIDestroy`, and
+`TestManualRealOCIInvoke` — this file previously claimed the opposite, and the
+claim was wrong. What actually keeps a bare run from mutating anything is each
+mutating test's own env guard (`OCI_EXEC_*` for Execute, `OCI_TEST_RESOURCE_ID`
+for Destroy, `OCI_INVOKE_*` for Invoke): with those unset the test fails
 without issuing a request. If they happen to be set in your shell, a bare
 `-run TestManualRealOCI` **will** mutate. Anchor the pattern, as the Makefile
 target now does.
