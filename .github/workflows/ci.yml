@@ -2,6 +2,9 @@
 name: CI
 
 on:
+  # Pre-PR feedback on work branches. This list is a convenience, not the gate —
+  # it depends on branch naming, and a namespace nobody thought to register here
+  # silently gets nothing (that is how `verify/**` went uncovered).
   push:
     branches:
       - main
@@ -10,9 +13,18 @@ on:
       - feature/**
       - fix/**
       - chore/**
+      - verify/**
+  # The actual gate: nothing reaches an integration branch through a PR without
+  # a run, regardless of what the source branch is called. `devel` is listed for
+  # exactly the case that got through — a `verify/**` -> `devel` PR matched
+  # neither trigger, so a broken MANIFEST.sha256 merged unaudited (#23, caught
+  # only by the `devel` push run afterwards and then by the release PR #24).
+  # Cost of this: a `feature/**` -> `devel` PR now runs twice, once per event.
+  # Paying ~3 CI-minutes for a gate that does not depend on naming discipline.
   pull_request:
     branches:
       - main
+      - devel
 
 jobs:
   lint_and_test:
