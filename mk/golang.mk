@@ -124,7 +124,16 @@ golang.test: ## Run unit tests (verbose, race)
 		GO111MODULE=on GOFLAGS="$(GOFLAGS)" go test $(GO_RACE) -v $$PKGS \
 	)
 
-golang.test.manual-real-oci: ## Run the opt-in real-OCI verification harness (needs OCI_* env vars + REAL_OCI_TEST=1 — see docs/design/manual-verification.md)
+# NOTE: golang.test.manual-real-oci's -run pattern deliberately excludes
+# TestManualRealOCIDestroy and TestManualRealOCIInvoke — both mutate real OCI
+# state (Destroy irreversibly). Observe/Validate/Plan/Poll are read-only, so a
+# bare `make golang.test.manual-real-oci` is safe to run without inspecting
+# what it does first; Destroy/Invoke are not, and folding them into the same
+# convenience target would make "run the harness" and "delete/change a real
+# resource" one accidental keystroke apart. They stay reachable only via the
+# explicit `go test -run TestManualRealOCI(Destroy|Invoke)` invocations in
+# docs/design/manual-verification.md, run one at a time, deliberately.
+golang.test.manual-real-oci: ## Run the opt-in real-OCI verification harness (needs OCI_* env vars + REAL_OCI_TEST=1 — see docs/design/manual-verification.md). Read-only ops only — Destroy/Invoke mutate and have no target here on purpose (see the note above).
 	@if [ -z "$$REAL_OCI_TEST" ]; then \
 		echo "REAL_OCI_TEST is not set — see docs/design/manual-verification.md for required OCI_* env vars."; \
 		exit 1; \
@@ -205,13 +214,17 @@ oci.generate: ## Regenerate module/schemas/<service>/*.json from the pinned OCI 
 		SDK=/tmp/ocigp/pkg/mod/github.com/oracle/oci-go-sdk/v65@$(OCI_SDK_VERSION)/core; \
 		mkdir -p /app/module/schemas/core; \
 		cd /app/tools/oci-extract && \
-		CLIENT="$$SDK/core_virtualnetwork_client.go"; \
+		NET_CLIENT="$$SDK/core_virtualnetwork_client.go"; \
+		COMPUTE_CLIENT="$$SDK/core_compute_client.go"; \
 		go run ./cmd/oci-extract -schema Vcn -ns cic:network:vcn \
 			"$$SDK/create_vcn_details.go" "$$SDK/update_vcn_details.go" \
-			"$$SDK/vcn.go" "$$SDK/change_vcn_compartment_details.go" "$$CLIENT" > /app/module/schemas/core/vcn.json; \
+			"$$SDK/vcn.go" "$$SDK/change_vcn_compartment_details.go" "$$NET_CLIENT" > /app/module/schemas/core/vcn.json; \
 		go run ./cmd/oci-extract -schema Subnet -ns cic:network:subnet \
 			"$$SDK/create_subnet_details.go" "$$SDK/update_subnet_details.go" \
-			"$$SDK/subnet.go" "$$SDK/change_subnet_compartment_details.go" "$$CLIENT" > /app/module/schemas/core/subnet.json'
+			"$$SDK/subnet.go" "$$SDK/change_subnet_compartment_details.go" "$$NET_CLIENT" > /app/module/schemas/core/subnet.json; \
+		go run ./cmd/oci-extract -schema Instance -ns cic:compute:instance \
+			"$$SDK/launch_instance_details.go" "$$SDK/update_instance_details.go" \
+			"$$SDK/instance.go" "$$SDK/change_instance_compartment_details.go" "$$COMPUTE_CLIENT" > /app/module/schemas/core/instance.json'
 	@echo "OK: module/schemas/core/*.json regenerated — review the diff and commit"
 
 # ---- Operation-resolution coverage over the whole pinned SDK (roadmap P2.5) ----

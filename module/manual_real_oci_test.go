@@ -525,6 +525,199 @@ func TestManualRealOCIPoll(t *testing.T) {
 	}
 }
 
+// TestManualRealOCIDestroy calls the Destroy() handler directly — not
+// Execute() — against a live OCI resource. The distinction is the point: every
+// prior "delete" run against real OCI went through
+// Execute(OCI_EXEC_OPERATION=Delete<Resource>), which exercises Execute's own
+// codepath (executeOne, renderBody keyed by the caller-supplied operation
+// name). Destroy() is a separate handler with its own codepath — resolveOp
+// looks up the resource's role="delete" operation from the embedded contract
+// itself, rather than trusting a caller-supplied operation name — and that
+// codepath had never run against real OCI before this test (see
+// docs/design/manual-verification.md). A resolveOp bug here would either fail
+// outright or, worse, write a wrong operation label into the ProofTrace step
+// while still deleting the resource.
+//
+// MUTATES — irrecoverably. It deletes OCI_TEST_RESOURCE_ID. Never run this
+// against a resource you need; see docs/design/manual-verification.md for the
+// disposable-resource setup this expects (a scratch VCN or a
+// VM.Standard.E2.1.Micro instance created for exactly this purpose).
+//
+// Config (env):
+//
+//	OCI_TEST_KIND         e.g. cic:network:vcn, cic:compute:instance
+//	                       (default cic:network:vcn)
+//	OCI_TEST_RESOURCE_ID  the resource to delete
+//	OCI_TEST_BASE_PATH    OCI API version prefix (default /20160918)
+func TestManualRealOCIDestroy(t *testing.T) {
+	if os.Getenv("REAL_OCI_TEST") == "" {
+		t.Skip("set REAL_OCI_TEST=1 to run against real OCI")
+	}
+
+	keyPath := os.Getenv("OCI_KEY_PATH")
+	tenancy := os.Getenv("OCI_TENANCY_OCID")
+	user := os.Getenv("OCI_USER_OCID")
+	fingerprint := os.Getenv("OCI_FINGERPRINT")
+	region := os.Getenv("OCI_REGION")
+	resourceID := os.Getenv("OCI_TEST_RESOURCE_ID")
+	kind := os.Getenv("OCI_TEST_KIND")
+	if kind == "" {
+		kind = "cic:network:vcn"
+	}
+	basePath := os.Getenv("OCI_TEST_BASE_PATH")
+	if basePath == "" {
+		basePath = "/20160918"
+	}
+	if keyPath == "" || tenancy == "" || user == "" || fingerprint == "" || region == "" || resourceID == "" {
+		t.Fatal("OCI_KEY_PATH, OCI_TENANCY_OCID, OCI_USER_OCID, OCI_FINGERPRINT, OCI_REGION, OCI_TEST_RESOURCE_ID must all be set")
+	}
+
+	rsaKey := loadRSAKey(t, keyPath)
+	wireRealHostCalls(rsaKey)
+
+	fmt.Printf("=== Destroy: DELETING %s (kind=%s) — irreversible ===\n", resourceID, kind)
+
+	destroyReq := destroyRequest{
+		Kind: kind,
+		Binding: execBinding{
+			Host:       ociHost(region),
+			BasePath:   basePath,
+			KeyID:      tenancy + "/" + user + "/" + fingerprint,
+			ResourceID: resourceID,
+		},
+	}
+	destroyReqJSON, _ := json.Marshal(destroyReq)
+
+	resultJSON, err := Destroy(nil, destroyReqJSON)
+	if err != nil {
+		t.Fatalf("Destroy returned Go error: %v", err)
+	}
+	fmt.Printf("=== Destroy result ===\n%s\n", resultJSON)
+
+	var wrapper struct {
+		Status string          `json:"status"`
+		Result json.RawMessage `json:"result"`
+		Error  *providerError  `json:"error"`
+	}
+	if err := json.Unmarshal(resultJSON, &wrapper); err != nil {
+		t.Fatalf("result not valid JSON: %v", err)
+	}
+	if wrapper.Status != "ok" {
+		t.Fatalf("Destroy reported status=%s: %s", wrapper.Status, resultJSON)
+	}
+	var er executionResult
+	if err := json.Unmarshal(wrapper.Result, &er); err != nil {
+		t.Fatalf("result.result not valid JSON: %v", err)
+	}
+	if len(er.Steps) != 1 {
+		t.Fatalf("expected exactly one step, got %d: %+v", len(er.Steps), er.Steps)
+	}
+	// The point of this test: the operation label Destroy() wrote is the
+	// resource's real role="delete" operation (TerminateInstance, DeleteVcn,
+	// …), resolved from the embedded contract — never a name assumed from the
+	// resource kind. This is what lands in the ProofTrace step.
+	if er.Steps[0].Operation == "" {
+		t.Fatalf("Destroy wrote no operation label: %+v", er.Steps[0])
+	}
+	fmt.Printf("Destroy resolved operation label: %s\n", er.Steps[0].Operation)
+	if er.Status == "failed" {
+		t.Fatalf("destroy failed: %+v", er.Steps)
+	}
+}
+
+// TestManualRealOCIInvoke calls the Invoke() handler directly against a live
+// OCI resource, running one named action operation (e.g.
+// ChangeInstanceCompartment) with its config body. Invoke's "implemented"
+// status in provider.go's header had never been exercised against real OCI
+// before this test (see docs/design/manual-verification.md) — see also
+// docs/design/relay-requirements.md-adjacent output/invoke-scope.md for what
+// this needs to run for real (a second compartment) and what is honest to
+// claim without it.
+//
+// MUTATES: runs a real action operation against OCI_TEST_RESOURCE_ID. Never
+// run this without knowing exactly which resource and action it targets.
+//
+// Config (env):
+//
+//	OCI_TEST_KIND          e.g. cic:compute:instance
+//	OCI_TEST_RESOURCE_ID   the resource the action runs against
+//	OCI_TEST_BASE_PATH     OCI API version prefix (default /20160918)
+//	OCI_INVOKE_OPERATION   the action's registry operation name, e.g.
+//	                       ChangeInstanceCompartment (must be one of the
+//	                       resource's action-managed operations)
+//	OCI_INVOKE_CONFIG_JSON the action's input fields as a JSON object, e.g.
+//	                       {"compartmentId": "ocid1.compartment...."}
+func TestManualRealOCIInvoke(t *testing.T) {
+	if os.Getenv("REAL_OCI_TEST") == "" {
+		t.Skip("set REAL_OCI_TEST=1 to run against real OCI")
+	}
+
+	keyPath := os.Getenv("OCI_KEY_PATH")
+	tenancy := os.Getenv("OCI_TENANCY_OCID")
+	user := os.Getenv("OCI_USER_OCID")
+	fingerprint := os.Getenv("OCI_FINGERPRINT")
+	region := os.Getenv("OCI_REGION")
+	resourceID := os.Getenv("OCI_TEST_RESOURCE_ID")
+	kind := os.Getenv("OCI_TEST_KIND")
+	operation := os.Getenv("OCI_INVOKE_OPERATION")
+	configJSON := os.Getenv("OCI_INVOKE_CONFIG_JSON")
+	basePath := os.Getenv("OCI_TEST_BASE_PATH")
+	if basePath == "" {
+		basePath = "/20160918"
+	}
+	if keyPath == "" || tenancy == "" || user == "" || fingerprint == "" || region == "" ||
+		resourceID == "" || kind == "" || operation == "" || configJSON == "" {
+		t.Fatal("OCI_KEY_PATH, OCI_TENANCY_OCID, OCI_USER_OCID, OCI_FINGERPRINT, OCI_REGION, " +
+			"OCI_TEST_KIND, OCI_TEST_RESOURCE_ID, OCI_INVOKE_OPERATION, OCI_INVOKE_CONFIG_JSON must all be set")
+	}
+	if !json.Valid([]byte(configJSON)) {
+		t.Fatalf("OCI_INVOKE_CONFIG_JSON is not valid JSON: %q", configJSON)
+	}
+
+	rsaKey := loadRSAKey(t, keyPath)
+	wireRealHostCalls(rsaKey)
+
+	fmt.Printf("=== Invoke: running %s against %s (kind=%s) ===\n", operation, resourceID, kind)
+
+	invokeReq := invokeRequest{
+		Kind:      kind,
+		Operation: operation,
+		Config:    payloadFor(kind, json.RawMessage(configJSON)),
+		Binding: execBinding{
+			Host:       ociHost(region),
+			BasePath:   basePath,
+			KeyID:      tenancy + "/" + user + "/" + fingerprint,
+			ResourceID: resourceID,
+		},
+	}
+	invokeReqJSON, _ := json.Marshal(invokeReq)
+
+	resultJSON, err := Invoke(nil, invokeReqJSON)
+	if err != nil {
+		t.Fatalf("Invoke returned Go error: %v", err)
+	}
+	fmt.Printf("=== Invoke result ===\n%s\n", resultJSON)
+
+	var wrapper struct {
+		Status string          `json:"status"`
+		Result json.RawMessage `json:"result"`
+		Error  *providerError  `json:"error"`
+	}
+	if err := json.Unmarshal(resultJSON, &wrapper); err != nil {
+		t.Fatalf("result not valid JSON: %v", err)
+	}
+	if wrapper.Status != "ok" {
+		t.Fatalf("Invoke reported status=%s: %s", wrapper.Status, resultJSON)
+	}
+	var res operationResult
+	if err := json.Unmarshal(wrapper.Result, &res); err != nil {
+		t.Fatalf("result.result not valid JSON: %v", err)
+	}
+	if res.Status == "failed" {
+		t.Fatalf("invoke failed: %+v", res)
+	}
+}
+
 // payloadFor wraps raw JSON data into a schemaPayload envelope with a real
 // sha256 schema_hash (Plan/Validate only check well-formedness, not that the
 // hash matches a specific registry entry).

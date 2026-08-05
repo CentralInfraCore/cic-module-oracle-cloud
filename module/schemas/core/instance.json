@@ -1,0 +1,500 @@
+{
+  "config": {
+    "$id": "cic:compute:instance-config",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "description": "Intent (config) surface for Instance — the fields a caller may set.",
+    "properties": {
+      "agentConfig": {
+        "type": "object",
+        "x-cic-go-type": "InstanceAgentConfig",
+        "x-cic-policy": "mutable"
+      },
+      "availabilityConfig": {
+        "type": "object",
+        "x-cic-go-type": "InstanceAvailabilityConfig",
+        "x-cic-policy": "mutable"
+      },
+      "availabilityDomain": {
+        "description": "The availability domain the instance is running in.",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "capacityReservationId": {
+        "description": "The OCID of the compute capacity reservation this instance is launched under.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "clusterPlacementGroupId": {
+        "description": "The OCID of the cluster placement group of the instance.",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "compartmentId": {
+        "description": "The OCID of the compartment that contains the instance.",
+        "type": "string",
+        "x-cic-action": "ChangeInstanceCompartmentDetails",
+        "x-cic-policy": "action-managed"
+      },
+      "computeClusterId": {
+        "description": "The OCID (https://docs.oracle.com/iaas/Content/General/Concepts/identifiers.htm) of the compute cluster (https://docs.oracle.com/iaas/Content/Compute/Tasks/compute-clusters.htm) that the instance will be created in.",
+        "type": "string",
+        "x-cic-policy": "input-only"
+      },
+      "createVnicDetails": {
+        "type": "object",
+        "x-cic-go-type": "CreateVnicDetails",
+        "x-cic-policy": "input-only"
+      },
+      "dedicatedVmHostId": {
+        "description": "The OCID of the dedicated virtual machine host that the instance is placed on.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "definedTags": {
+        "additionalProperties": {
+          "additionalProperties": {
+            "type": "object",
+            "x-cic-go-type": "interface{}"
+          },
+          "type": "object"
+        },
+        "description": "Defined tags for this resource.",
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "displayName": {
+        "description": "A user-friendly name.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "extendedMetadata": {
+        "additionalProperties": {
+          "type": "object",
+          "x-cic-go-type": "interface{}"
+        },
+        "description": "Additional metadata key/value pairs that you provide.",
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "faultDomain": {
+        "description": "The name of the fault domain the instance is running in.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "freeformTags": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Free-form tags for this resource.",
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "hostnameLabel": {
+        "description": "Deprecated.",
+        "type": "string",
+        "x-cic-policy": "input-only"
+      },
+      "imageId": {
+        "description": "Deprecated.",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "instanceConfigurationId": {
+        "description": "The OCID of the Instance Configuration used to source launch details for this instance.",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "instanceOptions": {
+        "type": "object",
+        "x-cic-go-type": "InstanceOptions",
+        "x-cic-policy": "mutable"
+      },
+      "ipxeScript": {
+        "description": "When a bare metal or virtual machine instance boots, the iPXE firmware that runs on the instance is configured to run an iPXE script to continue the boot process.",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "isAIEnterpriseEnabled": {
+        "description": "Whether AI enterprise is enabled on the instance.",
+        "type": "boolean",
+        "x-cic-policy": "mutable"
+      },
+      "isPvEncryptionInTransitEnabled": {
+        "description": "Whether to enable in-transit encryption for the data volume's paravirtualized attachment.",
+        "type": "boolean",
+        "x-cic-policy": "input-only"
+      },
+      "launchOptions": {
+        "type": "object",
+        "x-cic-go-type": "LaunchOptions",
+        "x-cic-policy": "mutable"
+      },
+      "launchVolumeAttachments": {
+        "description": "Volume attachments to create as part of the launch instance operation.",
+        "items": {
+          "type": "object",
+          "x-cic-go-type": "LaunchAttachVolumeDetails"
+        },
+        "type": "array",
+        "x-cic-policy": "input-only"
+      },
+      "licensingConfigs": {
+        "description": "List of licensing configurations associated with the instance.",
+        "items": {
+          "type": "object",
+          "x-cic-go-type": "LicensingConfig"
+        },
+        "type": "array",
+        "x-cic-policy": "mutable"
+      },
+      "metadata": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Custom metadata that you provide.",
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "placementConstraintDetails": {
+        "type": "object",
+        "x-cic-go-type": "PlacementConstraintDetails",
+        "x-cic-policy": "create-only"
+      },
+      "platformConfig": {
+        "type": "object",
+        "x-cic-go-type": "PlatformConfig",
+        "x-cic-policy": "mutable"
+      },
+      "preemptibleInstanceConfig": {
+        "type": "object",
+        "x-cic-go-type": "PreemptibleInstanceConfigDetails",
+        "x-cic-policy": "create-only"
+      },
+      "securityAttributes": {
+        "additionalProperties": {
+          "additionalProperties": {
+            "type": "object",
+            "x-cic-go-type": "interface{}"
+          },
+          "type": "object"
+        },
+        "description": "Security attributes (https://docs.oracle.com/iaas/Content/zero-trust-packet-routing/zpr-artifacts.htm#security-attributes) are labels for a resource that can be referenced in a Zero Trust Packet Routing (https://docs.oracle.com/iaas/Content/zero-trust-packet-routing/overview.htm) (ZPR) policy to control access to ZPR-supported resources.",
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "shape": {
+        "description": "The shape of the instance.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "shapeConfig": {
+        "type": "object",
+        "x-cic-go-type": "InstanceShapeConfig",
+        "x-cic-policy": "mutable"
+      },
+      "sourceDetails": {
+        "type": "object",
+        "x-cic-go-type": "InstanceSourceDetails",
+        "x-cic-policy": "mutable"
+      },
+      "subnetId": {
+        "description": "Deprecated.",
+        "type": "string",
+        "x-cic-policy": "input-only"
+      },
+      "timeMaintenanceRebootDue": {
+        "description": "The date and time the instance is expected to be stopped / started,  in the format defined by RFC3339 (https://tools.ietf.org/html/rfc3339).",
+        "type": "object",
+        "x-cic-go-type": "common.SDKTime",
+        "x-cic-policy": "mutable"
+      },
+      "updateOperationConstraint": {
+        "description": "The parameter acts as a fail-safe to prevent unwanted downtime when updating a running instance.",
+        "type": "string",
+        "x-cic-go-type": "UpdateInstanceDetailsUpdateOperationConstraintEnum",
+        "x-cic-policy": "mutable"
+      }
+    },
+    "required": [
+      "availabilityDomain",
+      "compartmentId"
+    ],
+    "title": "cic:compute:instance-config",
+    "type": "object",
+    "x-cic-resource": "Instance",
+    "x-cic-schema-version": "v0.1.0"
+  },
+  "operations": {
+    "ChangeInstanceCompartment": {
+      "method": "POST",
+      "path": "/instances/{instanceId}/actions/changeCompartment",
+      "path_params": [
+        "instanceId"
+      ],
+      "role": "action"
+    },
+    "GetInstance": {
+      "method": "GET",
+      "path": "/instances/{instanceId}",
+      "path_params": [
+        "instanceId"
+      ],
+      "role": "read"
+    },
+    "LaunchInstance": {
+      "method": "POST",
+      "path": "/instances",
+      "role": "create"
+    },
+    "TerminateInstance": {
+      "method": "DELETE",
+      "path": "/instances/{instanceId}",
+      "path_params": [
+        "instanceId"
+      ],
+      "role": "delete"
+    },
+    "UpdateInstance": {
+      "method": "PUT",
+      "path": "/instances/{instanceId}",
+      "path_params": [
+        "instanceId"
+      ],
+      "role": "update"
+    }
+  },
+  "state": {
+    "$id": "cic:compute:instance-state",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "description": "Observed (state) surface for Instance — the fields read back from the provider.",
+    "properties": {
+      "agentConfig": {
+        "type": "object",
+        "x-cic-go-type": "InstanceAgentConfig",
+        "x-cic-policy": "mutable"
+      },
+      "availabilityConfig": {
+        "type": "object",
+        "x-cic-go-type": "InstanceAvailabilityConfig",
+        "x-cic-policy": "mutable"
+      },
+      "availabilityDomain": {
+        "description": "The availability domain the instance is running in.",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "capacityReservationId": {
+        "description": "The OCID of the compute capacity reservation this instance is launched under.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "clusterPlacementGroupId": {
+        "description": "The OCID of the cluster placement group of the instance.",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "compartmentId": {
+        "description": "The OCID of the compartment that contains the instance.",
+        "type": "string",
+        "x-cic-action": "ChangeInstanceCompartmentDetails",
+        "x-cic-policy": "action-managed"
+      },
+      "dedicatedVmHostId": {
+        "description": "The OCID of the dedicated virtual machine host that the instance is placed on.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "definedTags": {
+        "additionalProperties": {
+          "additionalProperties": {
+            "type": "object",
+            "x-cic-go-type": "interface{}"
+          },
+          "type": "object"
+        },
+        "description": "Defined tags for this resource.",
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "displayName": {
+        "description": "A user-friendly name.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "extendedMetadata": {
+        "additionalProperties": {
+          "type": "object",
+          "x-cic-go-type": "interface{}"
+        },
+        "description": "Additional metadata key/value pairs that you provide.",
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "faultDomain": {
+        "description": "The name of the fault domain the instance is running in.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "freeformTags": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Free-form tags for this resource.",
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "id": {
+        "description": "The OCID of the instance.",
+        "type": "string",
+        "x-cic-policy": "provider-computed"
+      },
+      "imageId": {
+        "description": "Deprecated.",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "instanceConfigurationId": {
+        "description": "The OCID of the Instance Configuration used to source launch details for this instance.",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "instanceOptions": {
+        "type": "object",
+        "x-cic-go-type": "InstanceOptions",
+        "x-cic-policy": "mutable"
+      },
+      "ipxeScript": {
+        "description": "When a bare metal or virtual machine instance boots, the iPXE firmware that runs on the instance is configured to run an iPXE script to continue the boot process.",
+        "type": "string",
+        "x-cic-policy": "create-only"
+      },
+      "isAIEnterpriseEnabled": {
+        "description": "Whether AI enterprise is enabled on the instance.",
+        "type": "boolean",
+        "x-cic-policy": "mutable"
+      },
+      "isCrossNumaNode": {
+        "description": "Whether the instance’s OCPUs and memory are distributed across multiple NUMA nodes.",
+        "type": "boolean",
+        "x-cic-policy": "provider-computed"
+      },
+      "launchMode": {
+        "description": "Specifies the configuration mode for launching virtual machine (VM) instances.",
+        "type": "string",
+        "x-cic-go-type": "InstanceLaunchModeEnum",
+        "x-cic-policy": "provider-computed"
+      },
+      "launchOptions": {
+        "type": "object",
+        "x-cic-go-type": "LaunchOptions",
+        "x-cic-policy": "mutable"
+      },
+      "licensingConfigs": {
+        "description": "List of licensing configurations associated with the instance.",
+        "items": {
+          "type": "object",
+          "x-cic-go-type": "LicensingConfig"
+        },
+        "type": "array",
+        "x-cic-policy": "mutable"
+      },
+      "lifecycleState": {
+        "description": "The current state of the instance.",
+        "type": "string",
+        "x-cic-go-type": "InstanceLifecycleStateEnum",
+        "x-cic-policy": "provider-computed"
+      },
+      "metadata": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Custom metadata that you provide.",
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "placementConstraintDetails": {
+        "type": "object",
+        "x-cic-go-type": "PlacementConstraintDetails",
+        "x-cic-policy": "create-only"
+      },
+      "platformConfig": {
+        "type": "object",
+        "x-cic-go-type": "PlatformConfig",
+        "x-cic-policy": "mutable"
+      },
+      "preemptibleInstanceConfig": {
+        "type": "object",
+        "x-cic-go-type": "PreemptibleInstanceConfigDetails",
+        "x-cic-policy": "create-only"
+      },
+      "region": {
+        "description": "The region that contains the availability domain the instance is running in.",
+        "type": "string",
+        "x-cic-policy": "provider-computed"
+      },
+      "securityAttributes": {
+        "additionalProperties": {
+          "additionalProperties": {
+            "type": "object",
+            "x-cic-go-type": "interface{}"
+          },
+          "type": "object"
+        },
+        "description": "Security attributes (https://docs.oracle.com/iaas/Content/zero-trust-packet-routing/zpr-artifacts.htm#security-attributes) are labels for a resource that can be referenced in a Zero Trust Packet Routing (https://docs.oracle.com/iaas/Content/zero-trust-packet-routing/overview.htm) (ZPR) policy to control access to ZPR-supported resources.",
+        "type": "object",
+        "x-cic-policy": "mutable"
+      },
+      "securityAttributesState": {
+        "description": "The lifecycle state of the `securityAttributes`",
+        "type": "string",
+        "x-cic-go-type": "InstanceSecurityAttributesStateEnum",
+        "x-cic-policy": "provider-computed"
+      },
+      "shape": {
+        "description": "The shape of the instance.",
+        "type": "string",
+        "x-cic-policy": "mutable"
+      },
+      "shapeConfig": {
+        "type": "object",
+        "x-cic-go-type": "InstanceShapeConfig",
+        "x-cic-policy": "mutable"
+      },
+      "sourceDetails": {
+        "type": "object",
+        "x-cic-go-type": "InstanceSourceDetails",
+        "x-cic-policy": "mutable"
+      },
+      "systemTags": {
+        "additionalProperties": {
+          "additionalProperties": {
+            "type": "object",
+            "x-cic-go-type": "interface{}"
+          },
+          "type": "object"
+        },
+        "description": "System tags for this resource.",
+        "type": "object",
+        "x-cic-policy": "provider-computed"
+      },
+      "timeCreated": {
+        "description": "The date and time the instance was created, in the format defined by RFC3339 (https://tools.ietf.org/html/rfc3339).",
+        "type": "object",
+        "x-cic-go-type": "common.SDKTime",
+        "x-cic-policy": "provider-computed"
+      },
+      "timeMaintenanceRebootDue": {
+        "description": "The date and time the instance is expected to be stopped / started,  in the format defined by RFC3339 (https://tools.ietf.org/html/rfc3339).",
+        "type": "object",
+        "x-cic-go-type": "common.SDKTime",
+        "x-cic-policy": "mutable"
+      }
+    },
+    "title": "cic:compute:instance-state",
+    "type": "object",
+    "x-cic-resource": "Instance",
+    "x-cic-schema-version": "v0.1.0"
+  }
+}
