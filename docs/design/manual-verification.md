@@ -26,16 +26,22 @@ doesn't provide.
 - The relay's real `cic-flow` host functions (Vault Transit signing, egress
   policy, capability-manifest enforcement) — `testCallHostSign`/
   `testCallHostActuate` substitute a local RSA key and a plain `net/http` call.
-- `invoke` — not yet run for real (see coverage table). Running it for real
-  needs a second compartment to move a resource into/out of (e.g.
-  `ChangeInstanceCompartment`) — the trial tenancy this harness otherwise uses
-  has none (root compartment only).
+- `invoke` — run for real 2026-08-05 (`ChangeInstanceCompartment`, see the
+  coverage row) and it exposed a real defect: `Invoke()` reports `succeeded` on
+  an asynchronous `202`, discarding the `opc-work-request-id`, so the caller
+  cannot poll and is told the work is done when it is not. Until that is fixed,
+  do not treat an `invoke` result's `succeeded` as terminal.
+- `invoke` on any action other than `ChangeInstanceCompartment` — the extraction
+  recipe only admits actions whose request body model was explicitly supplied,
+  so body-less (query-param) actions such as instance power state are not in the
+  schema at all. See the cic-factory job output `invoke-scope.md`.
 - `destroy` — verified for real on both a synchronous kind (`cic:network:vcn`,
   `DeleteVcn`/`204`/`succeeded`) and an asynchronous one with a different delete
   name shape (`cic:compute:instance`, `TerminateInstance`/`204`/`accepted` +
-  Work Request), 2026-08-05. Still only exercised on the happy path — a delete
-  that OCI *rejects* (dependency still attached, insufficient permission) has
-  not been run, so the error mapping in `Destroy()` remains fixture-level.
+  Work Request), 2026-08-05. Rejected deletes are measured too — see the "Error
+  paths" section above (`409` conflict and `404` not-found). What remains
+  unmeasured there is permission (`401`/`403`), precondition (`412`), throttling
+  (`429`) and `5xx`.
 - `execute` is exercised (Create/Update/Delete), but only ever run against an
   empty, personal/non-production trial tenancy, and the resources were torn
   down again afterward — never run against the paynance production tenancy
@@ -44,6 +50,39 @@ doesn't provide.
 
 Both of the above are real, separate verification work — see
 [`relay-requirements.md`](relay-requirements.md) for the relay-side gaps.
+
+## Error paths
+
+Everything above is the happy path. The error mapping (`ociError`,
+`module/provider.go:893`) decides the CIC error class and preserves OCI's native
+code — that is what a ProofTrace consumer reads when something goes wrong, so it
+is worth measuring rather than assuming. Run 2026-08-05 against real OCI:
+
+| Case | How it was provoked | HTTP | Where the error surfaced | `error_class` | `provider_code` |
+|---|---|---|---|---|---|
+| conflict | `Destroy()` a VCN that still has a subnet attached | `409` | step-level, `result.status: failed` | `conflict` | `IncorrectState` |
+| not-found | `Destroy()` the same subnet twice | `404` | **envelope-level**, `status: error` | `not-found` | — (not preserved) |
+| validation | `Execute(CreateVcn)` with `cidrBlock: 999.0.0.0/16` | `400` | step-level, `result.status: failed` | `validation` | `InvalidParameter` |
+
+Two things this pins down:
+
+- The mapping is right on the real path, not just against fixtures, and OCI's
+  message survives verbatim (`"...is associated with Subnet that is in use"`,
+  `"The requested CIDR 999.0.0.0/16 is invalid: unable to parse."`).
+- **A 404 on destroy comes out in a different shape from every other error.**
+  `Destroy()` short-circuits it deliberately (`provider.go:598`, and the doc
+  comment at `:582-584` says so): the envelope itself becomes `status: error`
+  with `class: not-found` and a synthesised message, `"resource already gone:
+  <ocid>"`. Every other failure stays inside a `status: ok` envelope as a failed
+  *step*. Worth knowing for two reasons — a caller parsing steps will find none,
+  and OCI's own `code`/`message` are dropped on this path while they are kept on
+  all the others, so the ProofTrace carries less provider evidence for a 404
+  than for a 409.
+
+Still unmeasured branches of `ociError`: `401`/`403` (permission), `412`
+(precondition), `429` (throttle, the only branch that sets `retryable`), and
+`5xx`. Provoking those needs either a deliberately under-privileged principal or
+load, neither of which this harness sets up.
 
 ## Coverage
 
@@ -58,7 +97,7 @@ Both of the above are real, separate verification work — see
 | `execute` (Update) | `cic:network:vcn` | **verified** | `UpdateVcn` (`displayName` change) on the VCN just created — `http_status: 200`, new `etag`. **Gotcha**: the first re-`Observe` after this appeared to show the *old* value — this was Go's test-result cache silently replaying the previous identical invocation, not a real failure; `oci network vcn get` and a `-count=1` re-run both confirmed the update took effect immediately. Always pass `-count=1`. |
 | `execute` (Delete) | `cic:network:vcn`, `cic:network:subnet` | **verified** | `DeleteSubnet` then `DeleteVcn` (order matters — a VCN can't be deleted while a subnet is attached) — both `http_status: 204`, synchronous. Confirmed gone via a 404 on `oci network subnet get` and an empty `oci network vcn list` afterward. Tenancy is empty again. |
 | `destroy` | `cic:network:vcn`, `cic:compute:instance` | **verified** | `TestManualRealOCIDestroy` calls `Destroy()` directly — the codepath every prior delete test bypassed by going through `Execute(OCI_EXEC_OPERATION=Delete…)` instead. Both runs 2026-08-05 against the POC trial tenancy (`eu-frankfurt-1`, commercial realm). **Synchronous case** — throwaway VCN (created via `Execute(CreateVcn)`, `200`): operation label `DeleteVcn`, `http_status: 204`, `status: succeeded`; confirmed gone via `404 NotAuthorizedOrNotFound`. **Asynchronous case** — Always Free `VM.Standard.E2.1.Micro` instance: operation label **`TerminateInstance`**, `http_status: 204`, `status: **accepted**` (not `succeeded`), plus a `work_request_id`. Two distinct things are proven here: (a) `resolveOp(kind, roleDelete, binding)` picks the delete op out of the embedded contract by *role*, not by name shape — `TerminateInstance`, not `DeleteInstance`, which is exactly the bug class `oci-lifecycle-role-bridge` fixed; and (b) the async path is distinguished from the sync one at the result level (`accepted` + work request vs `succeeded`). Instance independently confirmed `TERMINATED`. |
-| `invoke` | — | **not run** | `TestManualRealOCIInvoke` now exists. Only tried on resource kinds (`Vcn`, `Subnet`) that have no `action-managed` fields wired to a real action in prior test sessions; `cic:compute:instance` adds one (`ChangeInstanceCompartment`), but running it needs a second compartment the trial tenancy does not have. Env-guard confirmed to skip cleanly with no network call. |
+| `invoke` | `cic:compute:instance` | **verified, with a defect** | Run 2026-08-05 against a live instance, moving it into a scratch compartment created for the run: `ChangeInstanceCompartment`, `http_status: 202`, `status: succeeded`. The action itself works — `oci compute instance get` confirmed the instance's `compartment-id` was the new one. **But the result is wrong about being finished.** OCI answered `202 Accepted` and returned an `opc-work-request-id` (measured directly with `oci raw-request` on the same endpoint: `opc-work-request-id: ocid1.coreservicesworkrequest…`). `Invoke()` reports `succeeded` anyway and drops the id: `operationResult` (`module/provider.go:626`) has no `work_request_id` field, and the status is hardcoded to `succeeded` at `:668`, downgraded only on `>= 400`. `Execute`/`Destroy` handle this correctly on their own path (`:983-985` — *"An async op (202 Accepted, or an opc-work-request-id) is not done — the caller must poll the Work Request. Surface the id, not a false success."*), which is exactly what `Invoke` fails to do. So an async invoke currently reports a false success and gives the caller nothing to poll. |
 | `cic:compute:instance` schema | n/a (extraction, no OCI call) | **verified** | `make oci.generate` now also emits `module/schemas/core/instance.json`; the extractor resolves `LaunchInstance→create`, `TerminateInstance→delete`, `UpdateInstance→update`, `ChangeInstanceCompartment→action` from the SDK's own HTTP surface (`tools/oci-extract/resolve.go`), matching the P2.5 audit. `describe()`'s `resource_kinds` includes `cic:compute:instance` (measured via `TestManualDescribe`); `required_capabilities.egress_hosts` is unchanged (`["*.oraclecloud.com"]` — a single wildcard declared once in `Describe()`, not derived per resource kind). |
 
 ## A concrete finding from `describe`
