@@ -67,7 +67,7 @@ is worth measuring rather than assuming. Run 2026-08-05 against real OCI:
 | Case | How it was provoked | HTTP | Where the error surfaced | `error_class` | `provider_code` |
 |---|---|---|---|---|---|
 | conflict | `Destroy()` a VCN that still has a subnet attached | `409` | step-level, `result.status: failed` | `conflict` | `IncorrectState` |
-| not-found | `Destroy()` the same subnet twice | `404` | **envelope-level**, `status: error` | `not-found` | — (not preserved as measured 2026-08-05; fixed since, see note below — not yet re-verified against real OCI) |
+| not-found | `Destroy()` the same subnet twice | `404` | **envelope-level**, `status: error` | `not-found` | `NotAuthorizedOrNotFound` (empty as first measured 2026-08-05; fixed and **re-verified against real OCI** the same day — see note below) |
 | validation | `Execute(CreateVcn)` with `cidrBlock: 999.0.0.0/16` | `400` | step-level, `result.status: failed` | `validation` | `InvalidParameter` |
 
 Two things this pins down:
@@ -87,8 +87,23 @@ Two things this pins down:
   `ProviderCode`, folding OCI's message into the synthesised
   `"resource already gone: <ocid> (...)"` text instead of discarding it. Proven
   at the fixture level (`TestDestroyNotFoundKeepsProviderCode`, negative
-  direction shown too) — **not yet re-run against real OCI**; see
-  `orchestrator-verification.md` in the job output.
+  direction shown too), and **re-verified against real OCI 2026-08-05** by the
+  orchestrator — a throwaway VCN created and deleted via the CLI, then
+  `Destroy()`ed a second time:
+
+  ```json
+  {"status":"error","error":{"class":"not-found","provider_code":"NotAuthorizedOrNotFound",
+   "retryable":false,"message":"resource already gone: ocid1.vcn.oc1.eu-frankfurt-1.amaaaaaa… (Authorization failed or requested resource not found.)"}}
+  ```
+
+  `provider_code` is now populated, and OCI's own sentence survives inside the
+  parentheses. `class`, `retryable` and the envelope-level shape are unchanged —
+  the fix preserved information, it did not reshape the error. `NotAuthorizedOrNotFound`
+  is OCI's deliberate conflation of "no permission" and "does not exist", so a
+  consumer must not read it as proof of absence. Note that
+  `TestManualRealOCIDestroy` *fails* on this run by design — it asserts a
+  successful destroy, and the gone resource is the point; the envelope printed
+  above is the measurement, not the test verdict.
 
 Still unmeasured branches of `ociError`: `401`/`403` (permission), `412`
 (precondition), `429` (throttle, the only branch that sets `retryable`), and
@@ -108,7 +123,7 @@ load, neither of which this harness sets up.
 | `execute` (Update) | `cic:network:vcn` | **verified** | `UpdateVcn` (`displayName` change) on the VCN just created — `http_status: 200`, new `etag`. **Gotcha**: the first re-`Observe` after this appeared to show the *old* value — this was Go's test-result cache silently replaying the previous identical invocation, not a real failure; `oci network vcn get` and a `-count=1` re-run both confirmed the update took effect immediately. Always pass `-count=1`. |
 | `execute` (Delete) | `cic:network:vcn`, `cic:network:subnet` | **verified** | `DeleteSubnet` then `DeleteVcn` (order matters — a VCN can't be deleted while a subnet is attached) — both `http_status: 204`, synchronous. Confirmed gone via a 404 on `oci network subnet get` and an empty `oci network vcn list` afterward. Tenancy is empty again. |
 | `destroy` | `cic:network:vcn`, `cic:compute:instance` | **verified** | `TestManualRealOCIDestroy` calls `Destroy()` directly — the codepath every prior delete test bypassed by going through `Execute(OCI_EXEC_OPERATION=Delete…)` instead. Both runs 2026-08-05 against the POC trial tenancy (`eu-frankfurt-1`, commercial realm). **Synchronous case** — throwaway VCN (created via `Execute(CreateVcn)`, `200`): operation label `DeleteVcn`, `http_status: 204`, `status: succeeded`; confirmed gone via `404 NotAuthorizedOrNotFound`. **Asynchronous case** — Always Free `VM.Standard.E2.1.Micro` instance: operation label **`TerminateInstance`**, `http_status: 204`, `status: **accepted**` (not `succeeded`), plus a `work_request_id`. Two distinct things are proven here: (a) `resolveOp(kind, roleDelete, binding)` picks the delete op out of the embedded contract by *role*, not by name shape — `TerminateInstance`, not `DeleteInstance`, which is exactly the bug class `oci-lifecycle-role-bridge` fixed; and (b) the async path is distinguished from the sync one at the result level (`accepted` + work request vs `succeeded`). Instance independently confirmed `TERMINATED`. |
-| `invoke` | `cic:compute:instance` | **verified, with a defect (fix landed, not yet re-verified against real OCI)** | Run 2026-08-05 against a live instance, moving it into a scratch compartment created for the run: `ChangeInstanceCompartment`, `http_status: 202`, `status: succeeded`. The action itself works — `oci compute instance get` confirmed the instance's `compartment-id` was the new one. **But the result was wrong about being finished.** OCI answered `202 Accepted` and returned an `opc-work-request-id` (measured directly with `oci raw-request` on the same endpoint: `opc-work-request-id: ocid1.coreservicesworkrequest…`). `Invoke()` reported `succeeded` anyway and dropped the id: `operationResult` (`module/provider.go:626`) had no `work_request_id` field, and the status was hardcoded to `succeeded`, downgraded only on `>= 400`. `Execute`/`Destroy` handled this correctly on their own path (*"An async op (202 Accepted, or an opc-work-request-id) is not done — the caller must poll the Work Request. Surface the id, not a false success."*), which `Invoke` failed to do. **Fixed** (job `oci-invoke-async-result`): `operationResult` now carries `work_request_id`, and `Invoke()` reports `accepted` when the header is present, matching `Destroy`'s rule. Proven at the fixture level only (`TestInvokeAsync`, `TestInvokeFailedStatusUnchanged`) — the negative direction was shown too (the new test fails against the pre-fix code). **Not re-run against real OCI yet** — see `orchestrator-verification.md` in the job output for the exact recipe. |
+| `invoke` | `cic:compute:instance` | **verified** (a false-success defect was found on the first run, fixed, and the fix re-measured against real OCI — history kept below on purpose) | Run 2026-08-05 against a live instance, moving it into a scratch compartment created for the run: `ChangeInstanceCompartment`, `http_status: 202`, `status: succeeded`. The action itself works — `oci compute instance get` confirmed the instance's `compartment-id` was the new one. **But the result was wrong about being finished.** OCI answered `202 Accepted` and returned an `opc-work-request-id` (measured directly with `oci raw-request` on the same endpoint: `opc-work-request-id: ocid1.coreservicesworkrequest…`). `Invoke()` reported `succeeded` anyway and dropped the id: `operationResult` (`module/provider.go:626`) had no `work_request_id` field, and the status was hardcoded to `succeeded`, downgraded only on `>= 400`. `Execute`/`Destroy` handled this correctly on their own path (*"An async op (202 Accepted, or an opc-work-request-id) is not done — the caller must poll the Work Request. Surface the id, not a false success."*), which `Invoke` failed to do. **Fixed** (job `oci-invoke-async-result`): `operationResult` now carries `work_request_id`, and `Invoke()` reports `accepted` when the header is present, matching `Destroy`'s rule. Proven at the fixture level (`TestInvokeAsync`, `TestInvokeFailedStatusUnchanged`), the negative direction shown too (the new test fails against the pre-fix code). **Re-verified against real OCI 2026-08-05** by the orchestrator, on a freshly launched Always Free `VM.Standard.E2.1.Micro` and a scratch target compartment, same action as the original measurement: `{"status":"accepted","operation":"ChangeInstanceCompartment","http_status":202,"work_request_id":"ocid1.coreservicesworkrequest.oc1.eu-frankfurt-1.abtheljtmotbczoz7qp7cfxgndjwpoxam4pr4zjfjtdswtgxqdurvpuolfea"}` — `accepted`, not `succeeded`, and the id is no longer dropped. Feeding that id straight into `Poll()` returned `work_status: SUCCEEDED`, `percent_complete: 100`, `terminal: true`, which closes the loop **`Invoke → accepted + work_request_id → Poll → terminal`** on a Work Request that `Invoke` itself produced — the same shape already proven for `Destroy` (`TerminateInstance`). `oci compute instance get` independently confirmed the instance's `compartment-id` was the scratch compartment. All verification resources were torn down afterwards. |
 | `cic:compute:instance` schema | n/a (extraction, no OCI call) | **verified** | `make oci.generate` now also emits `module/schemas/core/instance.json`; the extractor resolves `LaunchInstance→create`, `TerminateInstance→delete`, `UpdateInstance→update`, `ChangeInstanceCompartment→action` from the SDK's own HTTP surface (`tools/oci-extract/resolve.go`), matching the P2.5 audit. `describe()`'s `resource_kinds` includes `cic:compute:instance` (measured via `TestManualDescribe`); `required_capabilities.egress_hosts` is unchanged (`["*.oraclecloud.com"]` — a single wildcard declared once in `Describe()`, not derived per resource kind). |
 
 ## A concrete finding from `describe`
@@ -123,6 +138,21 @@ This was not previously documented — recorded here as evidence, not yet raised
 as an `R#` item in `relay-requirements.md` pending a decision on scope.
 
 ## Usage
+
+**Two tenancies, two keys — do not mix them.** The rows above were measured
+against two different tenancies, and the credential set is *not* interchangeable
+between them. Getting this wrong produces a signature failure, not a helpful
+error:
+
+| Realm | Region | Key | Used for |
+|---|---|---|---|
+| `oc19` (EU Sovereign Cloud, `OCI_REALM_DOMAIN=oraclecloud.eu`) | `eu-frankfurt-2` | `~/.oci/oci_api_key.pem` | the read-only `observe`/`validate`/`plan` rows, and the realm finding below |
+| `oc1` (commercial trial) | `eu-frankfurt-1` | `~/.oci/oci_api_key_poc.pem` | every mutating row — `execute`, `destroy`, `invoke`, `poll` |
+
+The region alone tells you which key you need. (The recipe in job
+`oci-invoke-async-result`'s `orchestrator-verification.md` pairs
+`eu-frankfurt-1` with `oci_api_key.pem`, which is the wrong combination —
+caught while running it 2026-08-05.)
 
 **Running without a host Go toolchain.** The commands below assume `go test`
 runs directly on the host. If Go only exists inside the `builder` container
