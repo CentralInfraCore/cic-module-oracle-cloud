@@ -30,8 +30,12 @@ doesn't provide.
   needs a second compartment to move a resource into/out of (e.g.
   `ChangeInstanceCompartment`) — the trial tenancy this harness otherwise uses
   has none (root compartment only).
-- `destroy` — `TestManualRealOCIDestroy` now exists (calls `Destroy()` itself,
-  not `Execute()` — see the coverage row) but has not yet been run for real.
+- `destroy` — verified for real on `cic:network:vcn` only (2026-08-05,
+  `DeleteVcn`/`204`). The higher-value case is still open: a kind whose delete
+  operation has a *different name shape* and is asynchronous
+  (`TerminateInstance` on `cic:compute:instance`, which returns a Work Request).
+  That is the exact class of bug `oci-lifecycle-role-bridge` fixed, so a green
+  VCN run does not stand in for it.
 - `execute` is exercised (Create/Update/Delete), but only ever run against an
   empty, personal/non-production trial tenancy, and the resources were torn
   down again afterward — never run against the paynance production tenancy
@@ -53,7 +57,7 @@ Both of the above are real, separate verification work — see
 | `execute` (Create) | `cic:network:vcn`, `cic:network:subnet` | **verified** | `CreateVcn` then `CreateSubnet` (inside that VCN) against an empty personal trial tenancy (commercial realm) — both `http_status: 200`, synchronous, no work request. Each resource independently confirmed via `oci network vcn/subnet get`. |
 | `execute` (Update) | `cic:network:vcn` | **verified** | `UpdateVcn` (`displayName` change) on the VCN just created — `http_status: 200`, new `etag`. **Gotcha**: the first re-`Observe` after this appeared to show the *old* value — this was Go's test-result cache silently replaying the previous identical invocation, not a real failure; `oci network vcn get` and a `-count=1` re-run both confirmed the update took effect immediately. Always pass `-count=1`. |
 | `execute` (Delete) | `cic:network:vcn`, `cic:network:subnet` | **verified** | `DeleteSubnet` then `DeleteVcn` (order matters — a VCN can't be deleted while a subnet is attached) — both `http_status: 204`, synchronous. Confirmed gone via a 404 on `oci network subnet get` and an empty `oci network vcn list` afterward. Tenancy is empty again. |
-| `destroy` | — | **not run** | `TestManualRealOCIDestroy` now exists (`module/manual_real_oci_test.go`) and calls `Destroy()` directly — the codepath every prior delete test bypassed by going through `Execute(OCI_EXEC_OPERATION=Delete…)` instead. Unit/fixture-level only so far; env-guard confirmed to skip cleanly with no network call when `REAL_OCI_TEST` is unset. Not yet run against real OCI — see `output/orchestrator-verification.md` (cic-factory job `oci-instance-lifecycle-coverage`) for the exact run recipe. |
+| `destroy` | `cic:network:vcn` | **verified** | `TestManualRealOCIDestroy` calls `Destroy()` directly — the codepath every prior delete test bypassed by going through `Execute(OCI_EXEC_OPERATION=Delete…)` instead. Run against real OCI 2026-08-05 on a throwaway VCN (created via `Execute(CreateVcn)`, `http_status: 200`): `Destroy resolved operation label: DeleteVcn`, `http_status: 204`, `status: succeeded`. This is the claim that mattered — `resolveOp(kind, roleDelete, binding)` picked the delete operation out of the embedded contract, and that label is what lands in `executionStep.Operation` and from there in the ProofTrace. Independently confirmed gone: `oci network vcn get` → `404 NotAuthorizedOrNotFound`, and the compartment's VCN list is empty again. Not yet run for a kind whose delete op has a different name shape (`TerminateInstance`) or is asynchronous — see the `cic:compute:instance` note below. |
 | `invoke` | — | **not run** | `TestManualRealOCIInvoke` now exists. Only tried on resource kinds (`Vcn`, `Subnet`) that have no `action-managed` fields wired to a real action in prior test sessions; `cic:compute:instance` adds one (`ChangeInstanceCompartment`), but running it needs a second compartment the trial tenancy does not have. Env-guard confirmed to skip cleanly with no network call. |
 | `cic:compute:instance` schema | n/a (extraction, no OCI call) | **verified** | `make oci.generate` now also emits `module/schemas/core/instance.json`; the extractor resolves `LaunchInstance→create`, `TerminateInstance→delete`, `UpdateInstance→update`, `ChangeInstanceCompartment→action` from the SDK's own HTTP surface (`tools/oci-extract/resolve.go`), matching the P2.5 audit. `describe()`'s `resource_kinds` includes `cic:compute:instance` (measured via `TestManualDescribe`); `required_capabilities.egress_hosts` is unchanged (`["*.oraclecloud.com"]` — a single wildcard declared once in `Describe()`, not derived per resource kind). |
 
