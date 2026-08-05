@@ -596,7 +596,13 @@ func Destroy(auth, data []byte) ([]byte, error) {
 		return errResult(&providerError{Class: classTransport, Message: err.Error()})
 	}
 	if status == 404 {
-		return errResult(&providerError{Class: classNotFound, Message: "resource already gone: " + req.Binding.ResourceID})
+		// Short-circuit deliberately (the resource is already gone), but keep
+		// OCI's native code/message as evidence — ociError already extracts them
+		// and sets Class to not-found for a 404, so reuse it rather than
+		// synthesizing a bare providerError that drops them.
+		pe := ociError(status, respBody)
+		pe.Message = "resource already gone: " + req.Binding.ResourceID + " (" + pe.Message + ")"
+		return errResult(pe)
 	}
 	step := executionStep{
 		Operation: opName, HTTPStatus: status,
@@ -624,16 +630,20 @@ type invokeRequest struct {
 }
 
 type operationResult struct {
-	Status       string `json:"status"` // succeeded | failed
-	Operation    string `json:"operation"`
-	HTTPStatus   int    `json:"http_status,omitempty"`
-	Etag         string `json:"etag,omitempty"`
-	OpcRequestID string `json:"opc_request_id,omitempty"`
-	Error        string `json:"error,omitempty"`
+	Status        string `json:"status"` // succeeded | accepted | failed
+	Operation     string `json:"operation"`
+	HTTPStatus    int    `json:"http_status,omitempty"`
+	Etag          string `json:"etag,omitempty"`
+	OpcRequestID  string `json:"opc_request_id,omitempty"`
+	WorkRequestID string `json:"work_request_id,omitempty"` // set when the op is async (202); poll it
+	Error         string `json:"error,omitempty"`
 }
 
 // Invoke runs a named action operation (start/stop/attach/changeCompartment, …)
 // against the resource, carrying the request's config fields as the action body.
+// A 202/opc-work-request-id response is reported as "accepted" with the Work
+// Request id attached, not a false "succeeded" — the caller polls it to a
+// terminal state (see Poll).
 func Invoke(auth, data []byte) ([]byte, error) {
 	var req invokeRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -665,10 +675,22 @@ func Invoke(auth, data []byte) ([]byte, error) {
 	if err != nil {
 		return errResult(&providerError{Class: classTransport, Message: err.Error()})
 	}
-	res := operationResult{Status: "succeeded", Operation: req.Operation, HTTPStatus: status, Etag: headers["etag"], OpcRequestID: headers["opc-request-id"]}
-	if status >= 400 {
+	res := operationResult{
+		Operation: req.Operation, HTTPStatus: status,
+		Etag: headers["etag"], OpcRequestID: headers["opc-request-id"],
+		WorkRequestID: headers["opc-work-request-id"],
+	}
+	switch {
+	case status >= 400:
 		pe := ociError(status, respBody)
 		res.Status, res.Error = "failed", pe.Message
+	case res.WorkRequestID != "":
+		// A clean 202/opc-work-request-id is not done — the caller must poll the
+		// Work Request. Surface the id, not a false success (matches Destroy's
+		// accepted rule at :610-611, verified against real OCI).
+		res.Status = "accepted"
+	default:
+		res.Status = "succeeded"
 	}
 	return okResult(res)
 }

@@ -505,6 +505,45 @@ func TestDestroy(t *testing.T) {
 	}
 }
 
+// TestDestroyNotFoundKeepsProviderCode is the part-B fixture: a 404 on
+// destroy short-circuits into an envelope-level error deliberately
+// (provider.go:598), but that must not mean OCI's native code/message is
+// dropped — measured against real OCI 2026-08-05, every other error path
+// (409, 400) keeps them; only 404 didn't. See docs/design/manual-verification.md
+// "Error paths".
+func TestDestroyNotFoundKeepsProviderCode(t *testing.T) {
+	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
+	testCallHostActuate = func(req []byte) ([]byte, error) {
+		body := `{"code":"NotAuthorizedOrNotFound","message":"resource not found or you are not authorized to access it"}`
+		out, _ := json.Marshal(map[string]interface{}{
+			"status":      404,
+			"headers":     map[string]string{"opc-request-id": "d-2"},
+			"body_base64": base64.StdEncoding.EncodeToString([]byte(body)),
+		})
+		return out, nil
+	}
+	defer func() { testCallHostSign = nil; testCallHostActuate = nil }()
+
+	req, _ := json.Marshal(destroyRequest{Kind: "cic:network:vcn", Binding: execBinding{Host: "h", KeyID: "k", ResourceID: "ocid1.vcn..gone"}})
+	out, _ := Destroy(nil, req)
+	res := decodeResult(t, out)
+	if res.Status != "error" || res.Error == nil {
+		t.Fatalf("destroy status = %+v, want an envelope-level error", res)
+	}
+	if res.Error.Class != classNotFound {
+		t.Errorf("destroy error class = %q, want not-found", res.Error.Class)
+	}
+	if res.Error.ProviderCode != "NotAuthorizedOrNotFound" {
+		t.Errorf("destroy error provider_code = %q, want the OCI code verbatim, not lost", res.Error.ProviderCode)
+	}
+	if !strings.Contains(res.Error.Message, "resource not found or you are not authorized to access it") {
+		t.Errorf("destroy error message = %q, want OCI's message preserved", res.Error.Message)
+	}
+	if !strings.Contains(res.Error.Message, "ocid1.vcn..gone") {
+		t.Errorf("destroy error message = %q, want the resource id kept too", res.Error.Message)
+	}
+}
+
 func TestInvoke(t *testing.T) {
 	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
 	var gotURL, gotBody string
@@ -538,11 +577,97 @@ func TestInvoke(t *testing.T) {
 	if or.Status != "succeeded" || or.HTTPStatus != 200 || or.Etag != "i-1" {
 		t.Errorf("invoke result = %+v, want succeeded/200/i-1", or)
 	}
+	// Regression: a synchronous (no work-request) invoke must not gain a
+	// work_request_id field — omitempty should drop it entirely.
+	if strings.Contains(string(res.Result), "work_request_id") {
+		t.Errorf("invoke result = %s, sync result must not carry work_request_id", res.Result)
+	}
 	if gotURL != "POST https://h/vcns/ocid1.vcn..z/actions/changeCompartment" {
 		t.Errorf("invoke actuated %q", gotURL)
 	}
 	if !strings.Contains(gotBody, "ocid1.compartment..new") {
 		t.Errorf("invoke body = %q, want the compartmentId", gotBody)
+	}
+}
+
+// TestInvokeAsync is the fix under test: OCI answers 202 with an
+// opc-work-request-id, the way ChangeInstanceCompartment did for real on
+// 2026-08-05 (see docs/design/manual-verification.md). Invoke() must report
+// "accepted", not a false "succeeded", and must surface the Work Request id
+// so the caller has something to Poll().
+func TestInvokeAsync(t *testing.T) {
+	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
+	testCallHostActuate = func(req []byte) ([]byte, error) {
+		out, _ := json.Marshal(map[string]interface{}{
+			"status": 202,
+			"headers": map[string]string{
+				"opc-request-id":      "i-2",
+				"opc-work-request-id": "ocid1.coreservicesworkrequest.oc1.eu-frankfurt-1.a",
+			},
+		})
+		return out, nil
+	}
+	defer func() { testCallHostSign = nil; testCallHostActuate = nil }()
+
+	req, _ := json.Marshal(invokeRequest{
+		Kind:      "cic:compute:instance",
+		Operation: "ChangeInstanceCompartment",
+		Config:    schemaPayload{Data: json.RawMessage(`{"compartmentId":"ocid1.compartment..new"}`)},
+		Binding:   execBinding{Host: "h", KeyID: "k", ResourceID: "ocid1.instance..z"},
+	})
+	out, _ := Invoke(nil, req)
+	res := decodeResult(t, out)
+	if res.Status != "ok" {
+		t.Fatalf("invoke status %s (raw %s)", res.Status, out)
+	}
+	var or operationResult
+	json.Unmarshal(res.Result, &or)
+	if or.Status != "accepted" {
+		t.Errorf("invoke result status = %q, want accepted (a 202 with an opc-work-request-id is not done)", or.Status)
+	}
+	if or.WorkRequestID != "ocid1.coreservicesworkrequest.oc1.eu-frankfurt-1.a" {
+		t.Errorf("invoke result work_request_id = %q, want the header value", or.WorkRequestID)
+	}
+	if or.HTTPStatus != 202 {
+		t.Errorf("invoke result http_status = %d, want 202", or.HTTPStatus)
+	}
+}
+
+// TestInvokeFailedStatusUnchanged is a regression fixture for the >= 400
+// branch, which this job deliberately leaves untouched (input.md, task A.4):
+// it must still report "failed" with OCI's error message threaded through
+// ociError, the same as before this change.
+func TestInvokeFailedStatusUnchanged(t *testing.T) {
+	testCallHostSign = func(req []byte) ([]byte, error) { return []byte(`{"signature":"S"}`), nil }
+	testCallHostActuate = func(req []byte) ([]byte, error) {
+		body := `{"code":"InvalidParameter","message":"compartmentId is not a valid OCID"}`
+		out, _ := json.Marshal(map[string]interface{}{
+			"status":      400,
+			"headers":     map[string]string{"opc-request-id": "i-3"},
+			"body_base64": base64.StdEncoding.EncodeToString([]byte(body)),
+		})
+		return out, nil
+	}
+	defer func() { testCallHostSign = nil; testCallHostActuate = nil }()
+
+	req, _ := json.Marshal(invokeRequest{
+		Kind:      "cic:network:vcn",
+		Operation: "ChangeVcnCompartment",
+		Config:    schemaPayload{Data: json.RawMessage(`{"compartmentId":"not-an-ocid"}`)},
+		Binding:   execBinding{Host: "h", KeyID: "k", ResourceID: "ocid1.vcn..z"},
+	})
+	out, _ := Invoke(nil, req)
+	res := decodeResult(t, out)
+	if res.Status != "ok" {
+		t.Fatalf("invoke status %s (raw %s)", res.Status, out)
+	}
+	var or operationResult
+	json.Unmarshal(res.Result, &or)
+	if or.Status != "failed" || or.Error != "compartmentId is not a valid OCID" {
+		t.Errorf("invoke result = %+v, want failed/\"compartmentId is not a valid OCID\"", or)
+	}
+	if or.WorkRequestID != "" {
+		t.Errorf("invoke result work_request_id = %q, want empty on a failed sync call", or.WorkRequestID)
 	}
 }
 

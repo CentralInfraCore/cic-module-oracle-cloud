@@ -27,10 +27,16 @@ doesn't provide.
   policy, capability-manifest enforcement) — `testCallHostSign`/
   `testCallHostActuate` substitute a local RSA key and a plain `net/http` call.
 - `invoke` — run for real 2026-08-05 (`ChangeInstanceCompartment`, see the
-  coverage row) and it exposed a real defect: `Invoke()` reports `succeeded` on
+  coverage row) and it exposed a real defect: `Invoke()` reported `succeeded` on
   an asynchronous `202`, discarding the `opc-work-request-id`, so the caller
-  cannot poll and is told the work is done when it is not. Until that is fixed,
-  do not treat an `invoke` result's `succeeded` as terminal.
+  could not poll and was told the work was done when it was not. The fix
+  (`operationResult.WorkRequestID`, `status: accepted` when the header is
+  present — job `oci-invoke-async-result`) is landed and covered by fixtures
+  (`TestInvokeAsync`, `TestInvokeFailedStatusUnchanged` in
+  `module/provider_test.go`), but **not yet re-run against real OCI** — that is
+  the orchestrator's job (see `orchestrator-verification.md` in the job
+  output). Until that re-run happens, this row's real-OCI status still
+  reflects the pre-fix measurement below.
 - `invoke` on any action other than `ChangeInstanceCompartment` — the extraction
   recipe only admits actions whose request body model was explicitly supplied,
   so body-less (query-param) actions such as instance power state are not in the
@@ -61,7 +67,7 @@ is worth measuring rather than assuming. Run 2026-08-05 against real OCI:
 | Case | How it was provoked | HTTP | Where the error surfaced | `error_class` | `provider_code` |
 |---|---|---|---|---|---|
 | conflict | `Destroy()` a VCN that still has a subnet attached | `409` | step-level, `result.status: failed` | `conflict` | `IncorrectState` |
-| not-found | `Destroy()` the same subnet twice | `404` | **envelope-level**, `status: error` | `not-found` | — (not preserved) |
+| not-found | `Destroy()` the same subnet twice | `404` | **envelope-level**, `status: error` | `not-found` | — (not preserved as measured 2026-08-05; fixed since, see note below — not yet re-verified against real OCI) |
 | validation | `Execute(CreateVcn)` with `cidrBlock: 999.0.0.0/16` | `400` | step-level, `result.status: failed` | `validation` | `InvalidParameter` |
 
 Two things this pins down:
@@ -72,12 +78,17 @@ Two things this pins down:
 - **A 404 on destroy comes out in a different shape from every other error.**
   `Destroy()` short-circuits it deliberately (`provider.go:598`, and the doc
   comment at `:582-584` says so): the envelope itself becomes `status: error`
-  with `class: not-found` and a synthesised message, `"resource already gone:
-  <ocid>"`. Every other failure stays inside a `status: ok` envelope as a failed
-  *step*. Worth knowing for two reasons — a caller parsing steps will find none,
-  and OCI's own `code`/`message` are dropped on this path while they are kept on
-  all the others, so the ProofTrace carries less provider evidence for a 404
-  than for a 409.
+  with `class: not-found`. Every other failure stays inside a `status: ok`
+  envelope as a failed *step* — worth knowing on its own, a caller parsing
+  steps will find none for a 404. As measured 2026-08-05, OCI's own
+  `code`/`message` were also dropped on this path while they were kept on all
+  the others. **Fixed since** (job `oci-invoke-async-result`): the 404 branch
+  now runs the response through `ociError` like every other branch and keeps
+  `ProviderCode`, folding OCI's message into the synthesised
+  `"resource already gone: <ocid> (...)"` text instead of discarding it. Proven
+  at the fixture level (`TestDestroyNotFoundKeepsProviderCode`, negative
+  direction shown too) — **not yet re-run against real OCI**; see
+  `orchestrator-verification.md` in the job output.
 
 Still unmeasured branches of `ociError`: `401`/`403` (permission), `412`
 (precondition), `429` (throttle, the only branch that sets `retryable`), and
@@ -97,7 +108,7 @@ load, neither of which this harness sets up.
 | `execute` (Update) | `cic:network:vcn` | **verified** | `UpdateVcn` (`displayName` change) on the VCN just created — `http_status: 200`, new `etag`. **Gotcha**: the first re-`Observe` after this appeared to show the *old* value — this was Go's test-result cache silently replaying the previous identical invocation, not a real failure; `oci network vcn get` and a `-count=1` re-run both confirmed the update took effect immediately. Always pass `-count=1`. |
 | `execute` (Delete) | `cic:network:vcn`, `cic:network:subnet` | **verified** | `DeleteSubnet` then `DeleteVcn` (order matters — a VCN can't be deleted while a subnet is attached) — both `http_status: 204`, synchronous. Confirmed gone via a 404 on `oci network subnet get` and an empty `oci network vcn list` afterward. Tenancy is empty again. |
 | `destroy` | `cic:network:vcn`, `cic:compute:instance` | **verified** | `TestManualRealOCIDestroy` calls `Destroy()` directly — the codepath every prior delete test bypassed by going through `Execute(OCI_EXEC_OPERATION=Delete…)` instead. Both runs 2026-08-05 against the POC trial tenancy (`eu-frankfurt-1`, commercial realm). **Synchronous case** — throwaway VCN (created via `Execute(CreateVcn)`, `200`): operation label `DeleteVcn`, `http_status: 204`, `status: succeeded`; confirmed gone via `404 NotAuthorizedOrNotFound`. **Asynchronous case** — Always Free `VM.Standard.E2.1.Micro` instance: operation label **`TerminateInstance`**, `http_status: 204`, `status: **accepted**` (not `succeeded`), plus a `work_request_id`. Two distinct things are proven here: (a) `resolveOp(kind, roleDelete, binding)` picks the delete op out of the embedded contract by *role*, not by name shape — `TerminateInstance`, not `DeleteInstance`, which is exactly the bug class `oci-lifecycle-role-bridge` fixed; and (b) the async path is distinguished from the sync one at the result level (`accepted` + work request vs `succeeded`). Instance independently confirmed `TERMINATED`. |
-| `invoke` | `cic:compute:instance` | **verified, with a defect** | Run 2026-08-05 against a live instance, moving it into a scratch compartment created for the run: `ChangeInstanceCompartment`, `http_status: 202`, `status: succeeded`. The action itself works — `oci compute instance get` confirmed the instance's `compartment-id` was the new one. **But the result is wrong about being finished.** OCI answered `202 Accepted` and returned an `opc-work-request-id` (measured directly with `oci raw-request` on the same endpoint: `opc-work-request-id: ocid1.coreservicesworkrequest…`). `Invoke()` reports `succeeded` anyway and drops the id: `operationResult` (`module/provider.go:626`) has no `work_request_id` field, and the status is hardcoded to `succeeded` at `:668`, downgraded only on `>= 400`. `Execute`/`Destroy` handle this correctly on their own path (`:983-985` — *"An async op (202 Accepted, or an opc-work-request-id) is not done — the caller must poll the Work Request. Surface the id, not a false success."*), which is exactly what `Invoke` fails to do. So an async invoke currently reports a false success and gives the caller nothing to poll. |
+| `invoke` | `cic:compute:instance` | **verified, with a defect (fix landed, not yet re-verified against real OCI)** | Run 2026-08-05 against a live instance, moving it into a scratch compartment created for the run: `ChangeInstanceCompartment`, `http_status: 202`, `status: succeeded`. The action itself works — `oci compute instance get` confirmed the instance's `compartment-id` was the new one. **But the result was wrong about being finished.** OCI answered `202 Accepted` and returned an `opc-work-request-id` (measured directly with `oci raw-request` on the same endpoint: `opc-work-request-id: ocid1.coreservicesworkrequest…`). `Invoke()` reported `succeeded` anyway and dropped the id: `operationResult` (`module/provider.go:626`) had no `work_request_id` field, and the status was hardcoded to `succeeded`, downgraded only on `>= 400`. `Execute`/`Destroy` handled this correctly on their own path (*"An async op (202 Accepted, or an opc-work-request-id) is not done — the caller must poll the Work Request. Surface the id, not a false success."*), which `Invoke` failed to do. **Fixed** (job `oci-invoke-async-result`): `operationResult` now carries `work_request_id`, and `Invoke()` reports `accepted` when the header is present, matching `Destroy`'s rule. Proven at the fixture level only (`TestInvokeAsync`, `TestInvokeFailedStatusUnchanged`) — the negative direction was shown too (the new test fails against the pre-fix code). **Not re-run against real OCI yet** — see `orchestrator-verification.md` in the job output for the exact recipe. |
 | `cic:compute:instance` schema | n/a (extraction, no OCI call) | **verified** | `make oci.generate` now also emits `module/schemas/core/instance.json`; the extractor resolves `LaunchInstance→create`, `TerminateInstance→delete`, `UpdateInstance→update`, `ChangeInstanceCompartment→action` from the SDK's own HTTP surface (`tools/oci-extract/resolve.go`), matching the P2.5 audit. `describe()`'s `resource_kinds` includes `cic:compute:instance` (measured via `TestManualDescribe`); `required_capabilities.egress_hosts` is unchanged (`["*.oraclecloud.com"]` — a single wildcard declared once in `Describe()`, not derived per resource kind). |
 
 ## A concrete finding from `describe`
@@ -112,6 +123,32 @@ This was not previously documented — recorded here as evidence, not yet raised
 as an `R#` item in `relay-requirements.md` pending a decision on scope.
 
 ## Usage
+
+**Running without a host Go toolchain.** The commands below assume `go test`
+runs directly on the host. If Go only exists inside the `builder` container
+(`docker compose`), the host mount is the actual obstacle, not `OCI_KEY_PATH`
+alone: `docker-compose.yml` does not mount `$HOME/.oci` into `builder`, and
+`mk/golang.mk`'s own advice — put the key under a repo-relative gitignored
+path — is a trap as shipped, because `.gitignore` has no `*.pem` rule, so a key
+dropped under the repo is one `git add -A` away from being tracked. Measured
+2026-08-05, this is what actually works — mount the key file directly by path,
+bypassing the repo tree entirely:
+
+```bash
+docker compose run --rm --no-deps \
+  -v "$OCI_KEY_PATH_ON_HOST:/run/oci-key.pem:ro" \
+  -e OCI_KEY_PATH=/run/oci-key.pem \
+  -e OCI_TENANCY_OCID -e OCI_USER_OCID -e OCI_FINGERPRINT -e OCI_REGION \
+  -e OCI_REALM_DOMAIN -e OCI_TEST_KIND -e OCI_TEST_RESOURCE_ID \
+  -e REAL_OCI_TEST=1 \
+  builder sh -eu -c 'cd /app/module && go test -tags manual_real_oci -count=1 -run <TestName> -v ./'
+```
+
+(`OCI_TENANCY_OCID` etc. with no `=value` forwards the host shell's exported
+value into the container.) Swap `<TestName>` and the `-e` list per the
+per-op commands below. `.gitignore` now has a `*.pem` rule (this job added it)
+so a repo-relative key path is no longer a footgun either, but the mount above
+avoids the question entirely.
 
 Read-only ops (`Observe`/`Validate`/`Plan`):
 

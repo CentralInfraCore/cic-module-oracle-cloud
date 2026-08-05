@@ -5,3 +5,8 @@
 /*/*/__pycache__/
 /*/__pycache__/
 /.coverage
+
+# OCI API signing keys — mk/golang.mk's manual-real-oci advice is to place one
+# under a repo-relative path (gitignored); without this rule that advice was a
+# trap (measured 2026-08-05, see docs/design/manual-verification.md "Usage").
+*.pem
