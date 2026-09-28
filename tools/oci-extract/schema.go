@@ -158,8 +158,11 @@ func typeToSchema(goType string) map[string]interface{} {
 }
 
 // OperationMap returns the HTTP method+path for the operations a plan references
-// for this resource — its read/create/update/delete lifecycle plus every action
-// that governs a field. Keyed by operation name, so the module can attach the
+// for this resource — its read/create/update/delete lifecycle plus every
+// resolved action operation, whether or not it happens to govern an existing
+// config field's policy (AddVcnCidr is a standalone action: see
+// cic-module-oracle-cloud#27/#29 — it governs no field, only carries its own
+// input contract below). Keyed by operation name, so the module can attach the
 // concrete HTTP call to each provider_operation without embedding the whole
 // registry.
 //
