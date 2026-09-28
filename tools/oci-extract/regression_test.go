@@ -42,7 +42,7 @@ var committedSchemas = []resourceExpectation{
 		required: []string{"compartmentId"},
 		configPols: map[string]string{
 			"byoipv6CidrDetails":           "input-only",
-			"cidrBlock":                    "create-only",
+			"cidrBlock":                    "action-managed",
 			"cidrBlocks":                   "create-only",
 			"compartmentId":                "action-managed",
 			"definedTags":                  "mutable",
@@ -62,6 +62,7 @@ var committedSchemas = []resourceExpectation{
 			"UpdateVcn":            {"PUT", "/vcns/{vcnId}", []string{"vcnId"}, RoleUpdate},
 			"DeleteVcn":            {"DELETE", "/vcns/{vcnId}", []string{"vcnId"}, RoleDelete},
 			"ChangeVcnCompartment": {"POST", "/vcns/{vcnId}/actions/changeCompartment", []string{"vcnId"}, RoleAction},
+			"AddVcnCidr":           {"POST", "/vcns/{vcnId}/actions/addCidr", []string{"vcnId"}, RoleAction},
 		},
 	},
 	{
