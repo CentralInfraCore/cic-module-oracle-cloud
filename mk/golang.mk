@@ -218,7 +218,8 @@ oci.generate: ## Regenerate module/schemas/<service>/*.json from the pinned OCI 
 		COMPUTE_CLIENT="$$SDK/core_compute_client.go"; \
 		go run ./cmd/oci-extract -schema Vcn -ns cic:network:vcn \
 			"$$SDK/create_vcn_details.go" "$$SDK/update_vcn_details.go" \
-			"$$SDK/vcn.go" "$$SDK/change_vcn_compartment_details.go" "$$NET_CLIENT" > /app/module/schemas/core/vcn.json; \
+			"$$SDK/vcn.go" "$$SDK/change_vcn_compartment_details.go" \
+			"$$SDK/add_vcn_cidr_details.go" "$$NET_CLIENT" > /app/module/schemas/core/vcn.json; \
 		go run ./cmd/oci-extract -schema Subnet -ns cic:network:subnet \
 			"$$SDK/create_subnet_details.go" "$$SDK/update_subnet_details.go" \
 			"$$SDK/subnet.go" "$$SDK/change_subnet_compartment_details.go" "$$NET_CLIENT" > /app/module/schemas/core/subnet.json; \

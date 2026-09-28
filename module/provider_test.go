@@ -155,6 +155,13 @@ func TestPlanProviderOperations(t *testing.T) {
 	if got := ops(planVcn(t, `{"compartmentId":"a"}`, `{"compartmentId":"b"}`)); len(got) != 1 || got[0] != "ChangeVcnCompartment" {
 		t.Errorf("compartmentId change: provider_operations = %v, want [ChangeVcnCompartment]", got)
 	}
+	// action-managed change -> AddVcnCidr. The extractor keys this off the
+	// AddVcnCidrDetails body model's own field name, which the OCI SDK spells
+	// "cidrBlock" (singular) — the same name as the deprecated create-only
+	// field, not "cidrBlocks" (the array actually used for CIDR management).
+	if got := ops(planVcn(t, `{"cidrBlock":"10.0.1.0/24"}`, `{"cidrBlock":"10.0.0.0/24"}`)); len(got) != 1 || got[0] != "AddVcnCidr" {
+		t.Errorf("cidrBlock change: provider_operations = %v, want [AddVcnCidr]", got)
+	}
 	// immutable change -> Delete + Create (replace)
 	if got := ops(planVcn(t, `{"dnsLabel":"a"}`, `{"dnsLabel":"b"}`)); len(got) != 2 || got[0] != "DeleteVcn" || got[1] != "CreateVcn" {
 		t.Errorf("dnsLabel change: provider_operations = %v, want [DeleteVcn CreateVcn]", got)
