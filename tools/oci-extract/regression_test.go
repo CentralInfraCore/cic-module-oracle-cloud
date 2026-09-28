@@ -42,7 +42,7 @@ var committedSchemas = []resourceExpectation{
 		required: []string{"compartmentId"},
 		configPols: map[string]string{
 			"byoipv6CidrDetails":           "input-only",
-			"cidrBlock":                    "action-managed",
+			"cidrBlock":                    "create-only",
 			"cidrBlocks":                   "create-only",
 			"compartmentId":                "action-managed",
 			"definedTags":                  "mutable",

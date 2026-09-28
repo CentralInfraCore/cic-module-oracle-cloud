@@ -17,8 +17,7 @@
       "cidrBlock": {
         "description": "Deprecated.",
         "type": "string",
-        "x-cic-action": "AddVcnCidrDetails",
-        "x-cic-policy": "action-managed"
+        "x-cic-policy": "create-only"
       },
       "cidrBlocks": {
         "description": "The list of IPv4 CIDR blocks the VCN will use.",
@@ -172,8 +171,7 @@
       "cidrBlock": {
         "description": "Deprecated.",
         "type": "string",
-        "x-cic-action": "AddVcnCidrDetails",
-        "x-cic-policy": "action-managed"
+        "x-cic-policy": "create-only"
       },
       "cidrBlocks": {
         "description": "The list of IPv4 CIDR blocks the VCN will use.",

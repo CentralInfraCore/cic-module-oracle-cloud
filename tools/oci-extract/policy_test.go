@@ -55,6 +55,39 @@ func TestResourcePolicyVcn(t *testing.T) {
 	}
 }
 
+// TestDeriveFieldPolicyAddDetailsIsNotAFieldSetter proves an Add*Details
+// action model does not bind a config field's policy to action-managed, even
+// when an SDK naming accident gives its argument the same json name as an
+// existing scalar field. Real case (cic-module-oracle-cloud PR #27 review,
+// 2026-09-28): OCI's AddVcnCidrDetails.CidrBlock is "the CIDR to add" — an
+// action operand appended to the resource's cidrBlocks list — not a setter
+// for the resource's own deprecated CidrBlock scalar, which stays pinned to
+// cidrBlocks[0] regardless of how many CIDRs are added. Binding it as
+// action-managed made plan/execute re-fire AddVcnCidr forever: desired's
+// value (the CIDR just added) never converges with observed (still
+// cidrBlocks[0]).
+func TestDeriveFieldPolicyAddDetailsIsNotAFieldSetter(t *testing.T) {
+	create := Model{Name: "CreateVcnDetails", Fields: []Field{
+		{Name: "CidrBlock", JSON: "cidrBlock"},
+	}}
+	read := Model{Name: "Vcn", Fields: []Field{
+		{Name: "CidrBlock", JSON: "cidrBlock"},
+	}}
+	addAction := Model{Name: "AddVcnCidrDetails", Fields: []Field{
+		{Name: "CidrBlock", JSON: "cidrBlock"},
+	}}
+
+	got := DeriveFieldPolicy(create, Model{}, read, []Model{addAction})
+	byField := map[string]FieldPolicy{}
+	for _, fp := range got {
+		byField[fp.Field] = fp
+	}
+
+	if fp := byField["cidrBlock"]; fp.Policy != PolicyCreateOnly || fp.Action != "" {
+		t.Errorf("cidrBlock: policy = %q action = %q, want create-only with no action (Add*Details is not a field setter)", fp.Policy, fp.Action)
+	}
+}
+
 // TestDeriveFieldPolicyNoUpdateModel covers a resource with no Update model:
 // create+read fields become create-only (not mutable), unless an action applies.
 func TestDeriveFieldPolicyNoUpdateModel(t *testing.T) {
