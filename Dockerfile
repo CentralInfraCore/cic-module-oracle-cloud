@@ -15,8 +15,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wabt \
     && rm -rf /var/lib/apt/lists/*
 
-# Install pip-tools globally in the container for the setup service to use
-RUN pip install --no-cache-dir pip-tools
+# Install pip-tools globally in the container for the setup service to use.
+# Pinned: an unpinned install let a pip-tools minor bump (7.5.3 -> 7.6.1)
+# change requirements.txt's own generated header (adds --no-index), which
+# fails the CI drift check for anyone whose local image cache predates the
+# bump.
+RUN pip install --no-cache-dir pip-tools==7.6.1
 
 # ---- Go + TinyGo toolchain (WASM guest builds, mk/wasm.mk) ----
 ARG GO_VERSION=1.25.0
