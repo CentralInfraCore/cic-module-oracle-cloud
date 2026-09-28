@@ -13,6 +13,7 @@ package ociextract
 import (
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // Field policy classes.
@@ -45,9 +46,28 @@ func DeriveFieldPolicy(create, update, read Model, actionModels []Model) []Field
 	inU := jsonNames(update)
 	inR := jsonNames(read)
 
-	// field json name -> the first action model that carries it.
+	// field json name -> the first action model that carries it. Only
+	// Change*Details models are currently auto-bound as field setters.
+	// Add*/Remove*Details models are conservatively treated as standalone
+	// operations instead: a matching json field name does not prove
+	// convergence (that the resource field ends up equal to what the action
+	// sent), and getting this wrong is worse than being conservative — a
+	// falsely convergent binding makes plan/execute re-fire the action
+	// forever, since desired never catches up with observed. Confirmed
+	// non-convergent case: compartmentId via ChangeVcnCompartmentDetails
+	// does converge (observed.compartmentId becomes what was sent), but
+	// AddVcnCidrDetails.cidrBlock does not — it's "the CIDR to append to
+	// cidrBlocks" per the OCI SDK's own doc comment, while the resource's
+	// own (deprecated) cidrBlock scalar stays pinned to cidrBlocks[0]
+	// regardless of what gets added (cic-module-oracle-cloud PR #27 review,
+	// 2026-09-28). Add*/Remove*Details models are still registered as
+	// operations (schema.go / resolve.go) — they are simply not auto-bound
+	// to a config field's policy here.
 	actionOf := map[string]string{}
 	for _, am := range actionModels {
+		if !strings.HasPrefix(am.Name, "Change") {
+			continue
+		}
 		for name := range jsonNames(am) {
 			if _, seen := actionOf[name]; !seen {
 				actionOf[name] = am.Name
