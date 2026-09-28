@@ -62,6 +62,7 @@ var committedSchemas = []resourceExpectation{
 			"UpdateVcn":            {"PUT", "/vcns/{vcnId}", []string{"vcnId"}, RoleUpdate},
 			"DeleteVcn":            {"DELETE", "/vcns/{vcnId}", []string{"vcnId"}, RoleDelete},
 			"ChangeVcnCompartment": {"POST", "/vcns/{vcnId}/actions/changeCompartment", []string{"vcnId"}, RoleAction},
+			"AddVcnCidr":           {"POST", "/vcns/{vcnId}/actions/addCidr", []string{"vcnId"}, RoleAction},
 		},
 	},
 	{

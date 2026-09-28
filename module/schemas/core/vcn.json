@@ -108,6 +108,14 @@
     "x-cic-schema-version": "v0.1.0"
   },
   "operations": {
+    "AddVcnCidr": {
+      "method": "POST",
+      "path": "/vcns/{vcnId}/actions/addCidr",
+      "path_params": [
+        "vcnId"
+      ],
+      "role": "action"
+    },
     "ChangeVcnCompartment": {
       "method": "POST",
       "path": "/vcns/{vcnId}/actions/changeCompartment",
