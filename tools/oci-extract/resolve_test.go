@@ -129,6 +129,46 @@ func TestResolveMultiPathParamResource(t *testing.T) {
 	}
 }
 
+// An action operation's request body must be represented in OperationMap as a
+// first-class input contract, not just method/path/role — a caller driving
+// Invoke() directly otherwise has no schema-derived way to know what body an
+// action expects (cic-module-oracle-cloud#29). Read/create/update/delete carry
+// no input: their body is the config schema's mutable/create-only surface,
+// already represented there.
+func TestOperationMapActionInput(t *testing.T) {
+	models, ops := loadFixture(t, "testdata/vcn_client.go", "testdata/vcn.go")
+	res := Resolve(models, ops, "Vcn")
+	if !res.Complete() {
+		t.Fatalf("Vcn did not resolve cleanly: %v", res.Unresolved)
+	}
+
+	opMap := OperationMap(res)
+
+	change, ok := opMap["ChangeVcnCompartment"]
+	if !ok {
+		t.Fatal("ChangeVcnCompartment missing from the operation map")
+	}
+	input, ok := change["input"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ChangeVcnCompartment has no input contract: %+v", change)
+	}
+	props, _ := input["properties"].(map[string]interface{})
+	if _, ok := props["compartmentId"]; !ok || len(props) != 1 {
+		t.Errorf("ChangeVcnCompartment input.properties = %v, want exactly {compartmentId}", props)
+	}
+	if required, _ := input["required"].([]string); !reflect.DeepEqual(required, []string{"compartmentId"}) {
+		t.Errorf("ChangeVcnCompartment input.required = %v, want [compartmentId]", required)
+	}
+
+	for _, name := range []string{"GetVcn", "CreateVcn", "UpdateVcn", "DeleteVcn"} {
+		if e, ok := opMap[name]; ok {
+			if _, has := e["input"]; has {
+				t.Errorf("%s carries an input contract, want none — its body is the config schema", name)
+			}
+		}
+	}
+}
+
 // A polymorphic create body must be reported, never mistaken for a struct with
 // no fields.
 func TestResolveReportsPolymorphicCreateModel(t *testing.T) {

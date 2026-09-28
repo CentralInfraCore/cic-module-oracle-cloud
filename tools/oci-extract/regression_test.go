@@ -33,6 +33,10 @@ type opExpectation struct {
 	path       string
 	pathParams []string
 	role       string
+	// inputFields is the expected input.properties field set for an action
+	// operation (cic-module-oracle-cloud#29) — nil for read/create/update/
+	// delete, which carry their body via the config schema instead.
+	inputFields []string
 }
 
 var committedSchemas = []resourceExpectation{
@@ -57,12 +61,14 @@ var committedSchemas = []resourceExpectation{
 		},
 		stateProps: 19,
 		operations: map[string]opExpectation{
-			"GetVcn":               {"GET", "/vcns/{vcnId}", []string{"vcnId"}, RoleRead},
-			"CreateVcn":            {"POST", "/vcns", nil, RoleCreate},
-			"UpdateVcn":            {"PUT", "/vcns/{vcnId}", []string{"vcnId"}, RoleUpdate},
-			"DeleteVcn":            {"DELETE", "/vcns/{vcnId}", []string{"vcnId"}, RoleDelete},
-			"ChangeVcnCompartment": {"POST", "/vcns/{vcnId}/actions/changeCompartment", []string{"vcnId"}, RoleAction},
-			"AddVcnCidr":           {"POST", "/vcns/{vcnId}/actions/addCidr", []string{"vcnId"}, RoleAction},
+			"GetVcn":    {method: "GET", path: "/vcns/{vcnId}", pathParams: []string{"vcnId"}, role: RoleRead},
+			"CreateVcn": {method: "POST", path: "/vcns", role: RoleCreate},
+			"UpdateVcn": {method: "PUT", path: "/vcns/{vcnId}", pathParams: []string{"vcnId"}, role: RoleUpdate},
+			"DeleteVcn": {method: "DELETE", path: "/vcns/{vcnId}", pathParams: []string{"vcnId"}, role: RoleDelete},
+			"ChangeVcnCompartment": {method: "POST", path: "/vcns/{vcnId}/actions/changeCompartment",
+				pathParams: []string{"vcnId"}, role: RoleAction, inputFields: []string{"compartmentId"}},
+			"AddVcnCidr": {method: "POST", path: "/vcns/{vcnId}/actions/addCidr",
+				pathParams: []string{"vcnId"}, role: RoleAction, inputFields: []string{"cidrBlock"}},
 		},
 	},
 	{
@@ -89,11 +95,12 @@ var committedSchemas = []resourceExpectation{
 		},
 		stateProps: 23,
 		operations: map[string]opExpectation{
-			"GetSubnet":               {"GET", "/subnets/{subnetId}", []string{"subnetId"}, RoleRead},
-			"CreateSubnet":            {"POST", "/subnets", nil, RoleCreate},
-			"UpdateSubnet":            {"PUT", "/subnets/{subnetId}", []string{"subnetId"}, RoleUpdate},
-			"DeleteSubnet":            {"DELETE", "/subnets/{subnetId}", []string{"subnetId"}, RoleDelete},
-			"ChangeSubnetCompartment": {"POST", "/subnets/{subnetId}/actions/changeCompartment", []string{"subnetId"}, RoleAction},
+			"GetSubnet":    {method: "GET", path: "/subnets/{subnetId}", pathParams: []string{"subnetId"}, role: RoleRead},
+			"CreateSubnet": {method: "POST", path: "/subnets", role: RoleCreate},
+			"UpdateSubnet": {method: "PUT", path: "/subnets/{subnetId}", pathParams: []string{"subnetId"}, role: RoleUpdate},
+			"DeleteSubnet": {method: "DELETE", path: "/subnets/{subnetId}", pathParams: []string{"subnetId"}, role: RoleDelete},
+			"ChangeSubnetCompartment": {method: "POST", path: "/subnets/{subnetId}/actions/changeCompartment",
+				pathParams: []string{"subnetId"}, role: RoleAction, inputFields: []string{"compartmentId"}},
 		},
 	},
 }
@@ -120,6 +127,10 @@ func TestCommittedSchemaCoverageUnchanged(t *testing.T) {
 					Path       string   `json:"path"`
 					PathParams []string `json:"path_params"`
 					Role       string   `json:"role"`
+					Input      *struct {
+						Properties map[string]interface{} `json:"properties"`
+						Required   []string               `json:"required"`
+					} `json:"input"`
 				} `json:"operations"`
 			}
 			if err := json.Unmarshal(raw, &bundle); err != nil {
@@ -173,6 +184,15 @@ func TestCommittedSchemaCoverageUnchanged(t *testing.T) {
 				}
 				if got.Role != wo.role {
 					t.Errorf("operation %q role = %q, want %q", name, got.Role, wo.role)
+				}
+				var gotInputFields []string
+				if got.Input != nil {
+					for f := range got.Input.Properties {
+						gotInputFields = append(gotInputFields, f)
+					}
+				}
+				if !equalSorted(gotInputFields, wo.inputFields) {
+					t.Errorf("operation %q input fields = %v, want %v", name, gotInputFields, wo.inputFields)
 				}
 			}
 			for name := range bundle.Operations {

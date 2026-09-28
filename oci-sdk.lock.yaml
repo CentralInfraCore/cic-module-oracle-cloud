@@ -30,4 +30,4 @@ provider_dependency:
   # (oci-extract-full-sweep, task C: a single repo-wide hash does not scale once
   # the registry covers more than one service's worth of committed schemas.)
   extracted_schema_hashes:
-    core: "sha256:fe489b9716a55c7d79108d9189d899595d5a2a61215afc08882e7bd64b16f18c"
+    core: "sha256:73160d9684e4d2b3530bb9bf10c27315cd9cdcbf29d39788aab07b10277d9116"

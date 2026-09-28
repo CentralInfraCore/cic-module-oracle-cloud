@@ -178,7 +178,7 @@ func typeToSchema(goType string) map[string]interface{} {
 // them.
 func OperationMap(res Resolution) map[string]map[string]interface{} {
 	out := map[string]map[string]interface{}{}
-	add := func(op *Operation, role string) {
+	add := func(op *Operation, role string, body Model) {
 		if op == nil {
 			return
 		}
@@ -186,16 +186,66 @@ func OperationMap(res Resolution) map[string]map[string]interface{} {
 		if len(op.PathParams) > 0 {
 			e["path_params"] = op.PathParams
 		}
+		if input := actionInputSchema(body); input != nil {
+			e["input"] = input
+		}
 		out[op.Name] = e
 	}
-	add(res.ReadOp, RoleRead)
-	add(res.CreateOp, RoleCreate)
-	add(res.UpdateOp, RoleUpdate)
-	add(res.DeleteOp, RoleDelete)
+	add(res.ReadOp, RoleRead, Model{})
+	add(res.CreateOp, RoleCreate, Model{})
+	add(res.UpdateOp, RoleUpdate, Model{})
+	add(res.DeleteOp, RoleDelete, Model{})
+	// Actions are paired with ActionOps by index (see Resolution.Actions' doc).
 	for i := range res.ActionOps {
-		add(&res.ActionOps[i], RoleAction)
+		var body Model
+		if i < len(res.Actions) {
+			body = res.Actions[i]
+		}
+		add(&res.ActionOps[i], RoleAction, body)
 	}
 	return out
+}
+
+// actionInputSchema builds a JSON-Schema properties map for an action's request
+// body model, so a caller driving Invoke() directly has a formal contract for
+// what the action expects — not just the method/path/role OperationMap already
+// carries. Only action operations get this (create/update/delete already have
+// their full body via the config schema's mutable/create-only fields; an
+// action's body is otherwise undocumented anywhere in the generated schema —
+// cic-module-oracle-cloud#29). Unlike config fields, an action's own fields
+// never carry x-cic-policy: their role is "argument to this action", not a
+// resource lifecycle classification, and is not auto-bound to any config field
+// (policy.go: only Change*Details models are, and even then only for the
+// convergent field they set).
+func actionInputSchema(m Model) map[string]interface{} {
+	props := map[string]interface{}{}
+	var required []string
+	for _, f := range m.Fields {
+		if f.JSON == "" {
+			continue
+		}
+		prop := typeToSchema(f.Type)
+		if f.Doc != "" {
+			prop["description"] = firstSentence(f.Doc)
+		}
+		props[f.JSON] = prop
+		if f.Mandatory {
+			required = append(required, f.JSON)
+		}
+	}
+	if len(props) == 0 {
+		return nil
+	}
+	sort.Strings(required)
+	doc := map[string]interface{}{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           props,
+	}
+	if len(required) > 0 {
+		doc["required"] = required
+	}
+	return doc
 }
 
 // clone shallow-copies a property map so config and state don't share mutable

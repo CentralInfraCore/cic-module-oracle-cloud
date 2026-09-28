@@ -117,6 +117,19 @@
   },
   "operations": {
     "ChangeSubnetCompartment": {
+      "input": {
+        "additionalProperties": false,
+        "properties": {
+          "compartmentId": {
+            "description": "The OCID (https://docs.oracle.com/iaas/Content/General/Concepts/identifiers.htm) of the compartment to move the subnet to.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compartmentId"
+        ],
+        "type": "object"
+      },
       "method": "POST",
       "path": "/subnets/{subnetId}/actions/changeCompartment",
       "path_params": [
