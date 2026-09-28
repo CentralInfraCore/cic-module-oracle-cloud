@@ -109,6 +109,19 @@
   },
   "operations": {
     "AddVcnCidr": {
+      "input": {
+        "additionalProperties": false,
+        "properties": {
+          "cidrBlock": {
+            "description": "The CIDR block to add.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cidrBlock"
+        ],
+        "type": "object"
+      },
       "method": "POST",
       "path": "/vcns/{vcnId}/actions/addCidr",
       "path_params": [
@@ -117,6 +130,19 @@
       "role": "action"
     },
     "ChangeVcnCompartment": {
+      "input": {
+        "additionalProperties": false,
+        "properties": {
+          "compartmentId": {
+            "description": "The OCID (https://docs.oracle.com/iaas/Content/General/Concepts/identifiers.htm) of the compartment to move the VCN to.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compartmentId"
+        ],
+        "type": "object"
+      },
       "method": "POST",
       "path": "/vcns/{vcnId}/actions/changeCompartment",
       "path_params": [
