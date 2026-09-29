@@ -441,6 +441,26 @@ func Plan(auth, data []byte) ([]byte, error) {
 	if err != nil {
 		return errResult(&providerError{Class: classSchema, FieldPath: "observed.data", Message: err.Error()})
 	}
+	// Plan reconciles an already-observed, existing resource — it is not how
+	// a brand-new resource gets created. An empty observed (no fields at all)
+	// cannot be a real Observe() result: Observe() requires binding.resource_id
+	// and errors (class: not-found) on a 404 rather than returning empty state,
+	// so there is no legitimate caller path that produces this shape. Without
+	// this guard, every desired field reads as "changed" against the empty
+	// map, and a single create-only field among them escalates the plan to
+	// "replace" — emitting a Delete operation against a resource that was
+	// never created, with no real resource id to bind into its path
+	// (cic-module-oracle-cloud#31). A brand-new resource is created via a
+	// directly-constructed Execute(Create<Kind>) call instead (see
+	// docs/design/manual-verification.md's "execute (Create)" row) — Plan is
+	// never involved in that path, so this is a caller-error case, not a
+	// creation feature Plan lacks.
+	if len(observed) == 0 {
+		return errResult(&providerError{
+			Class: classValidation, FieldPath: "observed.data",
+			Message: "observed must be the state of an already-existing resource (from Observe()); Plan does not create new resources — call Execute directly with the create operation for that",
+		})
+	}
 
 	// Diff over the intent's declared fields. An absent desired field is
 	// unmanaged (tri-state: don't touch — provider-abi.md payload conventions),

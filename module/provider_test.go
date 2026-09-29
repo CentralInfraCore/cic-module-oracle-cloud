@@ -190,6 +190,35 @@ func TestPlanProviderOperations(t *testing.T) {
 	}
 }
 
+// TestPlanRejectsEmptyObserved proves the cic-module-oracle-cloud#31 fix:
+// Plan must reject an empty observed payload with a validation error, not
+// silently treat it as "the resource doesn't exist, plan a replace" — which
+// used to emit a DeleteVcn against a resource that was never created, with
+// no real resource id to bind into its path. Observe() cannot legitimately
+// produce this shape (it requires binding.resource_id and errors on a 404
+// rather than returning empty state), so this is a caller-error case: a
+// brand-new resource is created via a directly-constructed
+// Execute(CreateVcn) call instead, never through Plan.
+func TestPlanRejectsEmptyObserved(t *testing.T) {
+	req := planRequest{
+		Kind:     "cic:network:vcn",
+		Desired:  schemaPayload{SchemaID: "cic:network:vcn-config", SchemaVersion: "v0.1.0", SchemaHash: "abc123", Encoding: encCanonicalJSON, Data: json.RawMessage(`{"compartmentId":"ocid1.compartment..a","displayName":"new-vcn","cidrBlocks":["10.0.0.0/16"]}`)},
+		Observed: schemaPayload{SchemaID: "cic:network:vcn-state", SchemaVersion: "v0.1.0", SchemaHash: "abc123", Encoding: encCanonicalJSON, Data: json.RawMessage(`{}`)},
+	}
+	raw, _ := json.Marshal(req)
+	out, err := Plan(nil, raw)
+	if err != nil {
+		t.Fatalf("Plan transport error: %v", err)
+	}
+	res := decodeResult(t, out)
+	if res.Status != "error" || res.Error == nil || res.Error.Class != classValidation {
+		t.Fatalf("empty observed: got %+v, want status=error class=validation", res)
+	}
+	if res.Error.FieldPath != "observed.data" {
+		t.Errorf("error field_path = %q, want observed.data", res.Error.FieldPath)
+	}
+}
+
 // TestValidateSubnet proves the pipeline generalizes past VCN: a second embedded
 // contract (cic:network:subnet, two required fields) validates the same way.
 func TestValidateSubnet(t *testing.T) {
