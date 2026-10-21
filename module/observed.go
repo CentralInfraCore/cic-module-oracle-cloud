@@ -29,7 +29,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"sort"
 )
 
 type coverageState string
@@ -165,14 +164,4 @@ func jsonTypeMatches(want string, raw json.RawMessage) bool {
 		return s[0] == '-' || (s[0] >= '0' && s[0] <= '9')
 	}
 	return true
-}
-
-// coveragePaths lists the coverage paths in stable order (for tests and reports).
-func (n normalizedObservation) coveragePaths() []string {
-	ps := make([]string, 0, len(n.Coverage))
-	for p := range n.Coverage {
-		ps = append(ps, p)
-	}
-	sort.Strings(ps)
-	return ps
 }
