@@ -162,3 +162,28 @@ ManagedEntity
    (`stopped`, `degraded`): a runtime problem, not config drift.
 3. **Accepted difference** — byte-different but `satisfies` holds (IPv6 enabled +
    assigned blocks): conformant, not drift.
+
+## Observation coverage (read-only normalization)
+
+Status: **implemented and unit-tested, not wired into `observe`** (`module/observed.go`, `normalizeObserved`). `observe` keeps its
+result shape and its error-result handling of HTTP errors; wiring the coverage into the ABI result is a separate, deliberate step
+(it changes what a consumer receives, see `provider-abi.md`).
+
+A conformance check must be able to tell "nothing is there" from "nothing was seen". `normalizeObserved` takes the outcome of a
+read (HTTP status and body, or a transport failure; no network, no signing, no clock) and returns the raw `state`, the
+`effective_config` (reusing `effectiveConfig` and `applyDerivations`) and one coverage entry per contract config field
+(`/<field>`):
+
+| Coverage | When |
+|---|---|
+| `observed` | the field is in the answer with the type the contract says |
+| `absent` | OCI omitted the field **and** the kind declares that omission means "not set" (`unsetWhenOmitted`; for the VCN: `dnsLabel`) |
+| `unobserved` | no answer at all (transport failure); or an input-only field that the read does not return; or a derived field whose source is missing (no `ipv6CidrBlocks` means `isIpv6Enabled` is unobserved, **not** `false`) |
+| `unknown` | read but not trustworthy: a wrong type, a body that is not an object, an omitted field nobody declared as unset-when-omitted, or **any HTTP error answer** — a `404 NotAuthorizedOrNotFound` is given for a deleted resource and for one the caller may not see, so it is not authoritative absence |
+
+A value that is not `observed` is dropped from `effective_config`: what could not be trusted is not compared. Tests:
+`module/observed_test.go` against the common VCN fixture (`module/testdata/vcn-v1`, stage 3), which is a projection to the compared
+OCI paths.
+
+Known gap: the contract types `lifecycleState` as a plain string (no enum), so a state OCI reports that the registry's lifecycle
+enum cannot name (`UPDATING`) has no home yet; the fixture maps it to the registry value `unknown`.
