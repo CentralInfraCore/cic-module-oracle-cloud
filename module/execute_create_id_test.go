@@ -407,7 +407,7 @@ func TestOCIDPrefixForKind(t *testing.T) {
 func TestCreatedResourceIDIsNeverGuessed(t *testing.T) {
 	good := []string{"ocid1.vcn..z", "ocid1.vcn.oc1..xyz", "ocid1.vcn.oc1.eu-frankfurt-1.aaaa"}
 	for _, id := range good {
-		got, pe := createdResourceID(vcnKindForExec, []byte(`{"id":"`+id+`"}`))
+		got, pe := createdResourceID(vcnKindForExec, []byte(`{"id":"`+id+`"}`), 200, "")
 		if pe != nil {
 			t.Errorf("createdResourceID(%q) errored: %s", id, pe.Message)
 		}
@@ -417,7 +417,7 @@ func TestCreatedResourceIDIsNeverGuessed(t *testing.T) {
 	}
 	bad := []string{`{}`, ``, `null`, `{"id":""}`, `{"id":"ocid1.vcn."}`, `{"id":"ocid1.subnet..s"}`, `not json`, `[]`}
 	for _, body := range bad {
-		got, pe := createdResourceID(vcnKindForExec, []byte(body))
+		got, pe := createdResourceID(vcnKindForExec, []byte(body), 200, "")
 		if pe == nil {
 			t.Errorf("createdResourceID(%q) returned %q with no error, want an error", body, got)
 			continue

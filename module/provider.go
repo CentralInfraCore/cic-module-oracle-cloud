@@ -1044,7 +1044,7 @@ func executeOne(c resourceContract, po providerOperation, config map[string]json
 	// create that answered 2xx without a usable id is a FAILED step, not a silent
 	// success — see createdResourceID for why that is the safe direction.
 	if c.operations[po.Operation].role == roleCreate {
-		id, pe := createdResourceID(c.kind, respBody)
+		id, pe := createdResourceID(c.kind, respBody, status, step.WorkRequestID)
 		if pe != nil {
 			step.Error, step.ErrorClass, step.ProviderCode = pe.Message, pe.Class, pe.ProviderCode
 			return step, true
@@ -1064,14 +1064,24 @@ func executeOne(c resourceContract, po providerOperation, config map[string]json
 // SECOND resource. There is no retry here, by design: Execute runs the approved
 // plan verbatim and the recovery decision (reconcile by listing, or discard)
 // belongs to the caller, who alone knows the intent.
-func createdResourceID(kind string, body []byte) (string, *providerError) {
+//
+// status and workRequestID only choose the wording of the failure, never its
+// outcome. A 202 that carries a Work Request means the provider ACCEPTED the
+// create: the resource's final state is not known yet, so the message must not say
+// it was created, and it points at the Work Request instead. Every other 2xx keeps
+// the original "was created" wording.
+func createdResourceID(kind string, body []byte, status int, workRequestID string) (string, *providerError) {
 	fail := func(detail string) *providerError {
-		return &providerError{
-			Class: classProvider, Retryable: false,
-			Message: "create returned 2xx, so the resource was created, but its id is unknown (" +
-				detail + "); do NOT retry the create — a second create would duplicate the " +
-				"resource. Reconcile against the provider (list/read) to recover the id.",
+		msg := "create returned 2xx, so the resource was created, but its id is unknown (" +
+			detail + "); do NOT retry the create — a second create would duplicate the " +
+			"resource. Reconcile against the provider (list/read) to recover the id."
+		if status == 202 && workRequestID != "" {
+			msg = "the provider accepted the create (HTTP 202) and returned Work Request " + workRequestID +
+				", but the response carries no usable id (" + detail + "); the resource's final state " +
+				"is not known yet; do NOT retry the create — check the Work Request's state instead, " +
+				"because a second create could duplicate the resource."
 		}
+		return &providerError{Class: classProvider, Retryable: false, Message: msg}
 	}
 	raw, why := topLevelID(body)
 	if why != "" {

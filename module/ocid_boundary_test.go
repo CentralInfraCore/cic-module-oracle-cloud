@@ -69,7 +69,7 @@ func TestCreatedResourceIDAcceptsOnlyWellFormedOCIDs(t *testing.T) {
 		"ocid1.vcn.oc2.iad.AbC_123-xyz",
 	}
 	for _, id := range accept {
-		got, pe := createdResourceID(kind, []byte(`{"id":"`+id+`"}`))
+		got, pe := createdResourceID(kind, []byte(`{"id":"`+id+`"}`), 200, "")
 		if pe != nil || got != id {
 			t.Errorf("createdResourceID(%q) = %q, %v; want it accepted", id, got, pe)
 		}
@@ -101,7 +101,7 @@ func TestCreatedResourceIDAcceptsOnlyWellFormedOCIDs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// The id is embedded through a JSON string so control characters stay legal JSON.
 			body := `{"id":"` + tc.id + `"}`
-			if got, pe := createdResourceID(kind, []byte(body)); pe == nil {
+			if got, pe := createdResourceID(kind, []byte(body), 200, ""); pe == nil {
 				t.Errorf("createdResourceID accepted %q as %q; want it refused", tc.id, got)
 			}
 		})
