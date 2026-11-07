@@ -25,7 +25,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"os"
 	"testing"
 
 	"github.com/tetratelabs/wazero"
@@ -160,9 +159,12 @@ func loadGuestWithCicFlow(t *testing.T, mock *cicFlowMock) (context.Context, api
 	t.Helper()
 
 	path := wasmBinaryPath()
-	wasmBytes, err := os.ReadFile(path)
+	wasmBytes, skip, err := guestBinaryBytes()
+	if skip != "" {
+		t.Skip(skip)
+	}
 	if err != nil {
-		t.Skipf("guest binary not readable (%v) — run `make wasm.build`, or point %s at a built binary", err, wasmPathEnv)
+		t.Fatal(err)
 	}
 
 	ctx := context.Background()

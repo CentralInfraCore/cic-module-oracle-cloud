@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -53,6 +54,28 @@ func wasmBinaryPath() string {
 	return wasmPath
 }
 
+// guestBinaryBytes reads the guest binary the host-load tests execute and says
+// what to do when it cannot be read.
+//
+//   - CIC_MODULE_WASM_PATH set: the caller asked for THAT binary, so any failure
+//     to read it is an error and the test must FAIL. Skipping would turn a
+//     mistyped or missing path into a green run that exercised nothing.
+//   - unset: the committed module.wasm. "Not built yet" (the file does not
+//     exist) is the one case that skips; any other read error is still an error.
+//
+// skip is non-empty only for that one case; skip and err are never both set.
+func guestBinaryBytes() (wasm []byte, skip string, err error) {
+	path := wasmBinaryPath()
+	b, rerr := os.ReadFile(path)
+	if rerr == nil {
+		return b, "", nil
+	}
+	if os.Getenv(wasmPathEnv) == "" && os.IsNotExist(rerr) {
+		return nil, "guest binary not built — run `make wasm.build` first (path: " + path + ")", nil
+	}
+	return nil, "", fmt.Errorf("cannot read the guest binary %s (%s is %q): %w", path, wasmPathEnv, os.Getenv(wasmPathEnv), rerr)
+}
+
 // envelope mirrors the host's GuestResult (cicwasm.go:346): {data, error}.
 type envelope struct {
 	Data  json.RawMessage `json:"data"`
@@ -71,13 +94,12 @@ type envelopeError struct {
 func loadModule(t *testing.T) (context.Context, api.Module, api.Function, api.Function, api.Function) {
 	t.Helper()
 
-	path := wasmBinaryPath()
-	wasmBytes, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		t.Skipf("guest binary not built — run `make wasm.build` first (path: %s)", path)
+	wasmBytes, skip, err := guestBinaryBytes()
+	if skip != "" {
+		t.Skip(skip)
 	}
 	if err != nil {
-		t.Fatalf("failed to read %s: %v", path, err)
+		t.Fatal(err)
 	}
 
 	ctx := context.Background()
