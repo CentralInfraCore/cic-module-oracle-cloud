@@ -175,6 +175,68 @@ func TestExecuteCreateRejectsAnUnusableID(t *testing.T) {
 	}
 }
 
+// TestExecuteCreateRejectsAnAmbiguousBody pins down that a 2xx answer alone is
+// not enough to identify the created resource: if the body cannot be read
+// unambiguously, the step FAILS, even when a well-formed OCID is present in it.
+//
+// The bodies below repeat the "id" key with values of different JSON types. A
+// decoder may leave the first (or the last) well-formed string in the target and
+// still report a type error for the other; treating that partial result as
+// usable would report an id the provider never unambiguously gave us, and an id
+// reported for the wrong resource is worse than none. So the decode error itself
+// must fail the step.
+//
+// The assertions are on the OUTCOME only: the status, the absence of a
+// resource_id, the CIC class, and that exactly one provider request was made.
+// They deliberately do not match the message text: that text is diagnostic, not
+// a contract, and is pinned elsewhere only for the one job it has (the
+// do-not-retry warning).
+func TestExecuteCreateRejectsAnAmbiguousBody(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"valid id first, numeric duplicate last", `{"id":"ocid1.vcn.oc1..ok","id":5}`},
+		{"numeric id first, valid duplicate last", `{"id":5,"id":"ocid1.vcn.oc1..ok"}`},
+		{"valid id first, array duplicate last", `{"id":"ocid1.vcn.oc1..ok","id":["x"]}`},
+		{"object id first, valid duplicate last", `{"id":{"a":1},"id":"ocid1.vcn.oc1..ok"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &cicFlowMock{Reply: replyWith(200, tc.body, map[string]string{"opc-request-id": "req-amb"})}
+			_, er := execVCN(t, mock, createVcnOp, createBinding, `{"compartmentId":"ocid1.compartment..c"}`)
+
+			if er.Status != "failed" {
+				t.Fatalf("status = %q, want failed: a 2xx with an ambiguous body must not identify the resource: %+v", er.Status, er.Steps)
+			}
+			if len(er.Steps) != 1 {
+				t.Fatalf("got %d steps, want 1", len(er.Steps))
+			}
+			s := er.Steps[0]
+			if s.ResourceID != "" {
+				t.Errorf("steps[0].resource_id = %q, want empty: an ambiguous answer must never yield an id", s.ResourceID)
+			}
+			if s.ErrorClass != classProvider {
+				t.Errorf("steps[0].error_class = %q, want %q", s.ErrorClass, classProvider)
+			}
+			if s.Error == "" {
+				t.Errorf("steps[0].error is empty; a failed step must say something")
+			}
+			// The 2xx is evidence the create happened; it must survive the failure.
+			if s.HTTPStatus != 200 || s.OpcRequestID != "req-amb" {
+				t.Errorf("steps[0] = %+v, want the 200 and opc-request-id preserved", s)
+			}
+			// No automatic retry: one sign, one request.
+			if n := mock.actuateCount(); n != 1 {
+				t.Errorf("the module made %d provider requests, want exactly 1 — Execute must not retry a create", n)
+			}
+			if n := mock.signCount(); n != 1 {
+				t.Errorf("the module made %d sign calls, want exactly 1", n)
+			}
+		})
+	}
+}
+
 // TestExecuteCreateIDComesFromTheResponseNotTheBinding is the anti-echo check. A
 // create's path has no resource id, so a resource_id in the binding is at best
 // stale and at worst someone else's resource: the step must report the answer's
