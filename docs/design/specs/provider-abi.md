@@ -105,6 +105,52 @@ execution-result:
     schema_hash: sha256:...
 ```
 
+### What `execute` emits today
+
+The block above is the design intent. The shape that this module's `execute` (and
+`destroy`) actually returns is smaller and is kept per operation:
+
+```yaml
+execution-result:                 # as implemented
+  status: succeeded | accepted | failed
+  steps:                          # one entry per executed provider operation, in plan order
+    - operation: CreateVcn
+      http_status: 200
+      etag: "..."                 # only when the provider sent one
+      opc_request_id: "..."
+      work_request_id: "..."      # only when the provider answered with an opc-work-request-id
+      resource_id: ocid1.vcn...   # role=create steps only, see below
+      error: "..."                # failed steps only; diagnostic text, not a contract
+      error_class: provider       # failed steps only; the CIC-canonical class
+      provider_code: "..."        # failed steps only, when the provider sent one
+```
+
+- `job`, `provider_metadata` and `evidence` of the design block are **not** emitted
+  by `execute` today (status: concept). The per-step fields above carry the request
+  id, the etag and the work request id that those blocks describe.
+- `accepted` is a run with no failed step but an outstanding Work Request.
+  `execute` stops at the first failed step and then reports `failed`.
+- **`resource_id`** is the OCID of the resource that a create step produced. It
+  appears on `role=create` steps only, so every other step is byte-identical to a
+  result that predates the field. It is read only from the create response's own
+  `id`, never from `binding.resource_id`. The module accepts it only if the
+  response body is exactly one JSON object with a single `id` member whose value
+  is a well-formed OCID of the expected type
+  (`ocid1.<type>.<realm>[.<region>][.<future use>].<unique id>`, at most 255
+  bytes, the segments limited to `[A-Za-z0-9_-]`).
+- A 2xx create answer without a usable id (missing, empty, null, not a string,
+  repeated, spelled differently, or not a well-formed OCID) is a **failed** step of
+  class `provider`, with no `resource_id`, and `execute` never retries a create.
+  If the answer was HTTP 202 with a Work Request, the message says that the
+  provider accepted the create and that the caller should check the Work Request;
+  any other 2xx says that the resource was created but its id is unknown. In both
+  cases it tells the caller not to retry, because a second create could duplicate
+  the resource. The message text is diagnostic; the contract is the status, the
+  `error_class`, the absent `resource_id` and the kept `work_request_id`.
+- **Not decided here:** whether a create that is accepted asynchronously and carries
+  no id should end as `accepted` with the id still pending, and what `poll` would
+  have to return to deliver the created resource's identifier.
+
 ## Error model
 
 ```yaml
