@@ -156,6 +156,38 @@ func TestHostLoadExecuteCreateWithoutIDFails(t *testing.T) {
 	}
 }
 
+// TestHostLoadExecuteCreateRefusesDuplicateID drives the duplicate-id refusal
+// over the real ABI: the strict, single-pass reading of the create response must
+// behave the same once compiled to wasip1 as it does on the host seam. Two valid
+// ids under one key would otherwise let "the last one wins" pick the resource.
+func TestHostLoadExecuteCreateRefusesDuplicateID(t *testing.T) {
+	requireFreshGuest(t)
+
+	mock := &cicFlowMock{
+		Reply: func(n int, call cicFlowCall) cicFlowReply {
+			return cicFlowReply{Status: 200, Headers: map[string]string{"opc-request-id": "req-dup"},
+				Body: `{"id":"ocid1.vcn.oc1..a","id":"ocid1.vcn.oc1..b"}`}
+		},
+	}
+	raw, er := execStepThroughWasm(t, mock,
+		providerOperation{Operation: "CreateVcn", Method: "POST", Path: "/vcns"},
+		execBinding{Host: "iaas.eu-frankfurt-1.oraclecloud.com", BasePath: "/20160918", KeyID: "tenancy/user/fp"},
+		`{"compartmentId":"ocid1.compartment.oc1..c"}`)
+
+	if er.Status != "failed" || len(er.Steps) != 1 {
+		t.Fatalf("execute = %+v, want failed with 1 step (raw: %s)", er, raw)
+	}
+	if er.Steps[0].ErrorClass != classProvider {
+		t.Errorf("steps[0].error_class = %q, want %q", er.Steps[0].ErrorClass, classProvider)
+	}
+	if strings.Contains(raw, "resource_id") {
+		t.Errorf("a refused create put a resource_id on the wire:\n%s", raw)
+	}
+	if n := mock.actuateCount(); n != 1 {
+		t.Errorf("the guest made %d provider requests, want exactly 1 — no retry", n)
+	}
+}
+
 // TestHostLoadExecuteUpdateHasNoResourceID is the role check over the real ABI:
 // an update whose answer carries an "id" still emits no resource_id, so the
 // field cannot leak into the shape every existing consumer already reads.

@@ -22,11 +22,13 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -1071,19 +1073,138 @@ func createdResourceID(kind string, body []byte) (string, *providerError) {
 				"resource. Reconcile against the provider (list/read) to recover the id.",
 		}
 	}
-	var resp struct {
-		ID string `json:"id"`
+	raw, why := topLevelID(body)
+	if why != "" {
+		return "", fail(why)
 	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fail("the response body is not a JSON object: " + err.Error())
+	var id string
+	if err := json.Unmarshal(raw, &id); err != nil {
+		return "", fail(`the "id" member is not a JSON string`)
 	}
-	if resp.ID == "" {
+	if id == "" {
 		return "", fail(`the response body carries no non-empty "id"`)
 	}
-	if prefix := ocidPrefixForKind(kind); !strings.HasPrefix(resp.ID, prefix) || len(resp.ID) == len(prefix) {
-		return "", fail("the id " + strconv.Quote(resp.ID) + " is not of the form " + prefix + "<...>")
+	if !wellFormedOCID(kind, id) {
+		shown := id
+		if len(shown) > 80 {
+			shown = shown[:80] + "..."
+		}
+		return "", fail("the id " + strconv.Quote(shown) + " is not a well-formed " + ocidPrefixForKind(kind) + "<...> OCID")
 	}
-	return resp.ID, nil
+	return id, nil
+}
+
+// topLevelID reads body as exactly ONE JSON object and returns the raw value of
+// its "id" member. It is deliberately stricter than json.Unmarshal into a struct,
+// which keeps the LAST of repeated keys and matches keys case-insensitively: a
+// resource id must never be decided by "last one wins". It therefore refuses a
+// repeated "id" (even with two valid strings), any other spelling of the key
+// ("ID", "Id", ...), a missing "id", and anything after the object. Members other
+// than "id", and the contents of nested values, are skipped without being read.
+// A non-empty why means the body is refused.
+func topLevelID(body []byte) (id json.RawMessage, why string) {
+	notObject := func(err error) string {
+		if err != nil {
+			return "the response body is not a single JSON object: " + err.Error()
+		}
+		return "the response body is not a single JSON object"
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, notObject(err)
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, notObject(nil)
+	}
+	seen := 0
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return nil, notObject(err)
+		}
+		key, ok := kt.(string)
+		if !ok {
+			return nil, notObject(nil)
+		}
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return nil, notObject(err)
+		}
+		if strings.EqualFold(key, "id") {
+			if key != "id" {
+				return nil, `the response body has a member spelled "` + key + `" next to or instead of "id": the id would be ambiguous`
+			}
+			seen++
+			id = v
+		}
+	}
+	if end, err := dec.Token(); err != nil {
+		return nil, notObject(err)
+	} else if d, ok := end.(json.Delim); !ok || d != '}' {
+		return nil, notObject(nil)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, "the response body has data after the JSON object"
+	}
+	switch {
+	case seen == 0:
+		return nil, `the response body carries no non-empty "id"`
+	case seen > 1:
+		return nil, `the response body repeats the "id" member`
+	}
+	return id, ""
+}
+
+// maxOCIDLen bounds an id we are willing to carry; real OCIDs are far shorter.
+const maxOCIDLen = 255
+
+// wellFormedOCID reports whether id is an OCID of the type kind creates:
+//
+//	ocid1 . <type> . <realm> [. <region>] [. <future use>] . <unique id>
+//
+// that is 4 to 6 dot-separated segments. The first is "ocid1", the second is the
+// resource type derived from kind, the others use only [A-Za-z0-9_-]; the realm
+// and region segments may be empty (the repo's fixtures use "ocid1.vcn..z" and
+// "ocid1.vcn.oc1..xyz") but the unique id may not. Nothing else is accepted:
+// the id is later spliced into a SIGNED request path, so it must never carry
+// "/", "?", "#", "%", "{", "}", whitespace or any non-ASCII byte.
+func wellFormedOCID(kind, id string) bool {
+	if len(id) > maxOCIDLen {
+		return false
+	}
+	parts := strings.Split(id, ".")
+	if len(parts) < 4 || len(parts) > 6 || parts[0] != "ocid1" {
+		return false
+	}
+	if want := strings.TrimSuffix(strings.TrimPrefix(ocidPrefixForKind(kind), "ocid1."), "."); want != "" {
+		if parts[1] != want {
+			return false
+		}
+	} else if !ocidSegmentOK(parts[1], true) {
+		return false
+	}
+	for i := 2; i < len(parts); i++ {
+		if !ocidSegmentOK(parts[i], i == len(parts)-1) {
+			return false
+		}
+	}
+	return true
+}
+
+// ocidSegmentOK reports whether s is made only of [A-Za-z0-9_-] and, when
+// nonEmpty, is not empty.
+func ocidSegmentOK(s string, nonEmpty bool) bool {
+	if nonEmpty && s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 // ocidPrefixForKind is the OCID prefix a kind's resources must carry: OCI names
@@ -1189,7 +1310,15 @@ func renderBody(c resourceContract, po providerOperation, config map[string]json
 
 // templatePath replaces each {param} segment with the bound resource id, so a
 // registry path like /vcns/{vcnId} targets the concrete resource.
+//
+// It is a single left-to-right pass over the path: the inserted id is copied
+// literally and is never scanned again, so an id that itself contains "{...}"
+// cannot make the substitution loop (it used to re-scan its own output without
+// end). For an id with no "{" the result is exactly what the previous
+// re-scanning loop produced. It does NOT escape the id: callers that hand it an
+// id from an untrusted source must validate it first (createdResourceID does).
 func templatePath(path, resourceID string) string {
+	var out strings.Builder
 	for {
 		i := strings.IndexByte(path, '{')
 		if i < 0 {
@@ -1199,9 +1328,12 @@ func templatePath(path, resourceID string) string {
 		if j < 0 {
 			break
 		}
-		path = path[:i] + resourceID + path[i+j+1:]
+		out.WriteString(path[:i])
+		out.WriteString(resourceID)
+		path = path[i+j+1:]
 	}
-	return path
+	out.WriteString(path)
+	return out.String()
 }
 
 func firstNonEmpty(a, b string) string {

@@ -180,11 +180,11 @@ func TestExecuteCreateRejectsAnUnusableID(t *testing.T) {
 // unambiguously, the step FAILS, even when a well-formed OCID is present in it.
 //
 // The bodies below repeat the "id" key with values of different JSON types. A
-// decoder may leave the first (or the last) well-formed string in the target and
-// still report a type error for the other; treating that partial result as
-// usable would report an id the provider never unambiguously gave us, and an id
-// reported for the wrong resource is worse than none. So the decode error itself
-// must fail the step.
+// permissive decoder may keep one well-formed string and only complain about the
+// other; the response is refused outright because a repeated "id" is ambiguous,
+// whatever the types (the same-type cases are in
+// TestExecuteCreateRefusesDuplicateAndAmbiguousIDs). An id reported for the
+// wrong resource is worse than none.
 //
 // The assertions are on the OUTCOME only: the status, the absence of a
 // resource_id, the CIC class, and that exactly one provider request was made.
