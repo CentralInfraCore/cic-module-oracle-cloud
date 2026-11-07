@@ -27,6 +27,13 @@ namespace it opens. Written 2026-07-18 from the design session recorded in
 - [specs/state-model.md](specs/state-model.md) — intent/state object-level
   correspondence and the `effective_config` projection.
 
+## Direction
+
+- [forms-integration-direction.md](forms-integration-direction.md) — the direction of
+  attaching CIC Forms to this module (first round, a design with no code), how it relates
+  to [primitives-alignment.md](primitives-alignment.md), the stated limits, and the
+  quality-assurance levels carried over from Forms, measured against this module.
+
 ## Requirements toward the relay
 
 - [relay-requirements.md](relay-requirements.md) — CIC-Relay is **read-only** from
