@@ -1,3 +1,5 @@
+> **Partly superseded (2026-11-07):** this document was written before the Forms engine and the NetworkSpace schema pinned in its corpus existed. The recommended order (API-first, extraction-driven, project onto primitives later) is **kept**; what changed, and the integration direction that follows, is in [`forms-integration-direction.md`](forms-integration-direction.md). The rest of this document is left as it was written.
+
 # Alignment with cic-primitives (the repo named "cic-yang" on GitHub)
 
 This module has **zero code-level connection** to `CentralInfraCore/cic-yang`
