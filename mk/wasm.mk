@@ -37,22 +37,10 @@ wasm.buildhash: ## Compute sha256(module.wasm) -> project.yaml metadata.buildHas
 # reproduction. Cross-environment bit-reproducibility is NOT required by the
 # trust chain and is not achievable from TinyGo's flags alone (issue #2); the
 # reproducibility signal lives in the non-fatal wasm.repro-probe below.
-wasm.integrity-verify: ## Verify sha256(committed module.wasm) == project.yaml metadata.buildHash (no rebuild)
+wasm.integrity-verify: ## Verify sha256(committed module.wasm) == project.yaml metadata.buildHash (no rebuild; run BEFORE wasm.build)
 	@echo "--- Verifying WASM artifact integrity (hash == buildHash) ---"
 	@test -f $(WASM_OUT) || { echo "$(WASM_OUT) not found — run 'make wasm.build' first"; exit 1; }
-	docker compose exec -T builder sh -eu -o pipefail -c \
-		'cd /app && ART_HASH=$$(sha256sum $(WASM_OUT) | cut -d" " -f1) && \
-		EXPECTED_HASH=$$(grep -E "^[[:space:]]*buildHash:" project.yaml | sed -E "s/^[[:space:]]*buildHash:[[:space:]]*//") && \
-		echo "artifact sha256:        $$ART_HASH" && \
-		echo "project.yaml buildHash: $$EXPECTED_HASH" && \
-		if [ "$$ART_HASH" != "$$EXPECTED_HASH" ]; then \
-			echo "FATAL: committed module.wasm does not match project.yaml metadata.buildHash" >&2; \
-			echo "  artifact: $$ART_HASH" >&2; \
-			echo "  declared: $$EXPECTED_HASH" >&2; \
-			echo "The signed artifact and its declared hash disagree. Run \"make wasm.build\" to refresh both, then commit." >&2; \
-			exit 1; \
-		fi; \
-		echo "OK: artifact integrity verified"'
+	docker compose exec -T builder sh -eu -c 'cd /app && sh tools/wasm_integrity_gate.sh $(WASM_OUT) project.yaml'
 
 # Reproducibility probe (supply-chain hardening, NON-FATAL). Rebuild to a
 # scratch path and REPORT whether this environment reproduces the committed
