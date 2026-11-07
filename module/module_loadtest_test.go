@@ -18,8 +18,8 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -31,6 +31,50 @@ import (
 
 // wasmPath is where `make wasm.build` (mk/wasm.mk) emits the TinyGo artifact.
 const wasmPath = "module.wasm"
+
+// wasmPathEnv names an alternative guest binary to load.
+//
+// Why it exists: module/module.wasm is a COMMITTED, signed artifact bound to
+// project.yaml's metadata.buildHash. A change to the guest sources is therefore
+// invisible to these tests until the owner rebuilds and re-signs it — which is
+// not something a code change may do on its own. With this variable a reviewer
+// can point the host-load tests at a freshly built, throwaway binary
+// (`tinygo build -o <scratch>/module.wasm -target wasip1 -scheduler=none .`)
+// and see the new code actually execute over the real Call export.
+//
+// Unset — the CI and developer default — means module.wasm, so every existing
+// test keeps loading exactly the artifact it always did.
+const wasmPathEnv = "CIC_MODULE_WASM_PATH"
+
+// wasmBinaryPath is the guest binary the host-load tests load.
+func wasmBinaryPath() string {
+	if p := os.Getenv(wasmPathEnv); p != "" {
+		return p
+	}
+	return wasmPath
+}
+
+// guestBinaryBytes reads the guest binary the host-load tests execute and says
+// what to do when it cannot be read.
+//
+//   - CIC_MODULE_WASM_PATH set: the caller asked for THAT binary, so any failure
+//     to read it is an error and the test must FAIL. Skipping would turn a
+//     mistyped or missing path into a green run that exercised nothing.
+//   - unset: the committed module.wasm. "Not built yet" (the file does not
+//     exist) is the one case that skips; any other read error is still an error.
+//
+// skip is non-empty only for that one case; skip and err are never both set.
+func guestBinaryBytes() (wasm []byte, skip string, err error) {
+	path := wasmBinaryPath()
+	b, rerr := os.ReadFile(path)
+	if rerr == nil {
+		return b, "", nil
+	}
+	if os.Getenv(wasmPathEnv) == "" && os.IsNotExist(rerr) {
+		return nil, "guest binary not built — run `make wasm.build` first (path: " + path + ")", nil
+	}
+	return nil, "", fmt.Errorf("cannot read the guest binary %s (%s is %q): %w", path, wasmPathEnv, os.Getenv(wasmPathEnv), rerr)
+}
 
 // envelope mirrors the host's GuestResult (cicwasm.go:346): {data, error}.
 type envelope struct {
@@ -50,12 +94,12 @@ type envelopeError struct {
 func loadModule(t *testing.T) (context.Context, api.Module, api.Function, api.Function, api.Function) {
 	t.Helper()
 
-	wasmBytes, err := os.ReadFile(wasmPath)
-	if os.IsNotExist(err) {
-		t.Skipf("module.wasm not built — run `make wasm.build` first (path: %s)", wasmPath)
+	wasmBytes, skip, err := guestBinaryBytes()
+	if skip != "" {
+		t.Skip(skip)
 	}
 	if err != nil {
-		t.Fatalf("failed to read %s: %v", wasmPath, err)
+		t.Fatal(err)
 	}
 
 	ctx := context.Background()
@@ -301,75 +345,18 @@ func TestHostLoadValidateConformance(t *testing.T) {
 // header, calls actuate, and returns the execution-result — the whole sign+send
 // path, exercised over the real wasmimport surface.
 func TestHostLoadExecute(t *testing.T) {
-	wasmBytes, err := os.ReadFile(wasmPath)
-	if os.IsNotExist(err) {
-		t.Skipf("module.wasm not built — run `make wasm.build` first")
-	}
-	if err != nil {
-		t.Fatalf("read %s: %v", wasmPath, err)
-	}
-
-	ctx := context.Background()
-	rt := wazero.NewRuntime(ctx)
-	t.Cleanup(func() { rt.Close(ctx) })
-	if _, err := wasi_snapshot_preview1.Instantiate(ctx, rt); err != nil {
-		t.Fatalf("wasi: %v", err)
-	}
-
-	var signedString, actuateReq string
-	// One host-func adapter for the git/cic-flow ABI: read req JSON, hand it to
-	// handler, write the response, return bytes written (or -1 if it overruns).
-	adapt := func(handler func(req []byte) []byte) func(context.Context, api.Module, uint32, uint32, uint32, uint32) int32 {
-		return func(ctx context.Context, mod api.Module, reqPtr, reqLen, outPtr, outLen uint32) int32 {
-			req, ok := mod.Memory().Read(reqPtr, reqLen)
-			if !ok {
-				return -1
+	// The generalized cic-flow mock (cicflow_mock_test.go), configured exactly as
+	// the mock inlined here used to be: 200, etag-1/req-1, an empty JSON body.
+	mock := &cicFlowMock{
+		Reply: func(n int, call cicFlowCall) cicFlowReply {
+			return cicFlowReply{
+				Status:  200,
+				Headers: map[string]string{"etag": "etag-1", "opc-request-id": "req-1"},
+				Body:    "{}",
 			}
-			resp := handler(req)
-			if uint32(len(resp)) > outLen || !mod.Memory().Write(outPtr, resp) {
-				return -1
-			}
-			return int32(len(resp))
-		}
+		},
 	}
-	_, err = rt.NewHostModuleBuilder("cic-flow").
-		NewFunctionBuilder().WithFunc(adapt(func(req []byte) []byte {
-		var r struct {
-			DataBase64 string `json:"data_base64"`
-		}
-		json.Unmarshal(req, &r)
-		raw, _ := base64.StdEncoding.DecodeString(r.DataBase64)
-		signedString = string(raw)
-		out, _ := json.Marshal(map[string]string{"signature": "FAKESIG=="})
-		return out
-	})).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("sign").
-		NewFunctionBuilder().WithFunc(adapt(func(req []byte) []byte {
-		actuateReq = string(req)
-		out, _ := json.Marshal(map[string]interface{}{
-			"status":      200,
-			"headers":     map[string]string{"etag": "etag-1", "opc-request-id": "req-1"},
-			"body_base64": base64.StdEncoding.EncodeToString([]byte("{}")),
-		})
-		return out
-	})).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("actuate").
-		Instantiate(ctx)
-	if err != nil {
-		t.Fatalf("cic-flow host module: %v", err)
-	}
-
-	compiled, err := rt.CompileModule(ctx, wasmBytes)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	instance, err := rt.InstantiateModule(ctx, compiled,
-		wazero.NewModuleConfig().WithName("exec_test").WithStartFunctions())
-	if err != nil {
-		t.Fatalf("instantiate: %v", err)
-	}
-	t.Cleanup(func() { instance.Close(ctx) })
-	callFn := instance.ExportedFunction("Call")
-	allocateFn := instance.ExportedFunction("allocate")
-	deallocateFn := instance.ExportedFunction("deallocate")
+	ctx, instance, callFn, allocateFn, deallocateFn := loadGuestWithCicFlow(t, mock)
 
 	// An approved plan (as `plan` would emit) + desired config + binding.
 	exReq := executeRequest{
@@ -414,6 +401,8 @@ func TestHostLoadExecute(t *testing.T) {
 	}
 
 	// The guest signed the OCI canonical string with the templated path...
+	signedString := mock.Signed[0]
+	actuateReq := mock.lastActuate(t).Raw
 	if !strings.Contains(signedString, "(request-target): put /vcns/ocid1.vcn.oc1..xyz") {
 		t.Errorf("signed string missing templated request-target:\n%s", signedString)
 	}

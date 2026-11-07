@@ -22,11 +22,13 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -923,9 +925,15 @@ type executionStep struct {
 	Etag          string `json:"etag,omitempty"`
 	OpcRequestID  string `json:"opc_request_id,omitempty"`
 	WorkRequestID string `json:"work_request_id,omitempty"` // set when the op is async (202); poll it
-	Error         string `json:"error,omitempty"`
-	ErrorClass    string `json:"error_class,omitempty"`   // CIC class (conflict/not-found/…)
-	ProviderCode  string `json:"provider_code,omitempty"` // OCI-native code, verbatim
+	// ResourceID is the OCID of the resource a role="create" step created, read
+	// from the create response's own "id". Set on create steps only, so every
+	// other step's bytes are unchanged (omitempty). It is NEVER echoed from
+	// binding.resource_id: a create's path carries no resource id (/vcns), so the
+	// binding cannot know it — only the provider's answer can.
+	ResourceID   string `json:"resource_id,omitempty"`
+	Error        string `json:"error,omitempty"`
+	ErrorClass   string `json:"error_class,omitempty"`   // CIC class (conflict/not-found/…)
+	ProviderCode string `json:"provider_code,omitempty"` // OCI-native code, verbatim
 }
 
 // ociError maps an OCI error response to a CIC provider-error. OCI 4xx/5xx bodies
@@ -1030,7 +1038,194 @@ func executeOne(c resourceContract, po providerOperation, config map[string]json
 		step.Error, step.ErrorClass, step.ProviderCode = pe.Message, pe.Class, pe.ProviderCode
 		return step, true
 	}
+	// A create is the one step whose outcome cannot be re-derived from its input:
+	// the new resource's OCID exists only in the provider's answer, and a caller
+	// that loses it cannot observe, update or destroy what it just made. So a
+	// create that answered 2xx without a usable id is a FAILED step, not a silent
+	// success — see createdResourceID for why that is the safe direction.
+	if c.operations[po.Operation].role == roleCreate {
+		id, pe := createdResourceID(c.kind, respBody, status, step.WorkRequestID)
+		if pe != nil {
+			step.Error, step.ErrorClass, step.ProviderCode = pe.Message, pe.Class, pe.ProviderCode
+			return step, true
+		}
+		step.ResourceID = id
+	}
 	return step, false
+}
+
+// createdResourceID extracts the created resource's OCID from a create
+// response's "id". It never invents or guesses one: every answer it cannot read
+// as a well-formed id of the expected kind is an error.
+//
+// Failing is deliberate and it is the SAFE direction. The provider answered 2xx,
+// so the resource very likely exists while its id is lost to us; the message
+// says so, because the tempting repair — call create again — would create a
+// SECOND resource. There is no retry here, by design: Execute runs the approved
+// plan verbatim and the recovery decision (reconcile by listing, or discard)
+// belongs to the caller, who alone knows the intent.
+//
+// status and workRequestID only choose the wording of the failure, never its
+// outcome. A 202 that carries a Work Request means the provider ACCEPTED the
+// create: the resource's final state is not known yet, so the message must not say
+// it was created, and it points at the Work Request instead. Every other 2xx keeps
+// the original "was created" wording.
+func createdResourceID(kind string, body []byte, status int, workRequestID string) (string, *providerError) {
+	fail := func(detail string) *providerError {
+		msg := "create returned 2xx, so the resource was created, but its id is unknown (" +
+			detail + "); do NOT retry the create — a second create would duplicate the " +
+			"resource. Reconcile against the provider (list/read) to recover the id."
+		if status == 202 && workRequestID != "" {
+			msg = "the provider accepted the create (HTTP 202) and returned Work Request " + workRequestID +
+				", but the response carries no usable id (" + detail + "); the resource's final state " +
+				"is not known yet; do NOT retry the create — check the Work Request's state instead, " +
+				"because a second create could duplicate the resource."
+		}
+		return &providerError{Class: classProvider, Retryable: false, Message: msg}
+	}
+	raw, why := topLevelID(body)
+	if why != "" {
+		return "", fail(why)
+	}
+	var id string
+	if err := json.Unmarshal(raw, &id); err != nil {
+		return "", fail(`the "id" member is not a JSON string`)
+	}
+	if id == "" {
+		return "", fail(`the response body carries no non-empty "id"`)
+	}
+	if !wellFormedOCID(kind, id) {
+		shown := id
+		if len(shown) > 80 {
+			shown = shown[:80] + "..."
+		}
+		return "", fail("the id " + strconv.Quote(shown) + " is not a well-formed " + ocidPrefixForKind(kind) + "<...> OCID")
+	}
+	return id, nil
+}
+
+// topLevelID reads body as exactly ONE JSON object and returns the raw value of
+// its "id" member. It is deliberately stricter than json.Unmarshal into a struct,
+// which keeps the LAST of repeated keys and matches keys case-insensitively: a
+// resource id must never be decided by "last one wins". It therefore refuses a
+// repeated "id" (even with two valid strings), any other spelling of the key
+// ("ID", "Id", ...), a missing "id", and anything after the object. Members other
+// than "id", and the contents of nested values, are skipped without being read.
+// A non-empty why means the body is refused.
+func topLevelID(body []byte) (id json.RawMessage, why string) {
+	notObject := func(err error) string {
+		if err != nil {
+			return "the response body is not a single JSON object: " + err.Error()
+		}
+		return "the response body is not a single JSON object"
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, notObject(err)
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, notObject(nil)
+	}
+	seen := 0
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return nil, notObject(err)
+		}
+		key, ok := kt.(string)
+		if !ok {
+			return nil, notObject(nil)
+		}
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return nil, notObject(err)
+		}
+		if strings.EqualFold(key, "id") {
+			if key != "id" {
+				return nil, `the response body has a member spelled "` + key + `" next to or instead of "id": the id would be ambiguous`
+			}
+			seen++
+			id = v
+		}
+	}
+	if end, err := dec.Token(); err != nil {
+		return nil, notObject(err)
+	} else if d, ok := end.(json.Delim); !ok || d != '}' {
+		return nil, notObject(nil)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, "the response body has data after the JSON object"
+	}
+	switch {
+	case seen == 0:
+		return nil, `the response body carries no non-empty "id"`
+	case seen > 1:
+		return nil, `the response body repeats the "id" member`
+	}
+	return id, ""
+}
+
+// maxOCIDLen bounds an id we are willing to carry; real OCIDs are far shorter.
+const maxOCIDLen = 255
+
+// wellFormedOCID reports whether id is an OCID of the type kind creates:
+//
+//	ocid1 . <type> . <realm> [. <region>] [. <future use>] . <unique id>
+//
+// that is 4 to 6 dot-separated segments. The first is "ocid1", the second is the
+// resource type derived from kind, the others use only [A-Za-z0-9_-]; the realm
+// and region segments may be empty (the repo's fixtures use "ocid1.vcn..z" and
+// "ocid1.vcn.oc1..xyz") but the unique id may not. Nothing else is accepted:
+// the id is later spliced into a SIGNED request path, so it must never carry
+// "/", "?", "#", "%", "{", "}", whitespace or any non-ASCII byte.
+func wellFormedOCID(kind, id string) bool {
+	if len(id) > maxOCIDLen {
+		return false
+	}
+	parts := strings.Split(id, ".")
+	if len(parts) < 4 || len(parts) > 6 || parts[0] != "ocid1" {
+		return false
+	}
+	if want := strings.TrimSuffix(strings.TrimPrefix(ocidPrefixForKind(kind), "ocid1."), "."); want != "" {
+		if parts[1] != want {
+			return false
+		}
+	} else if !ocidSegmentOK(parts[1], true) {
+		return false
+	}
+	for i := 2; i < len(parts); i++ {
+		if !ocidSegmentOK(parts[i], i == len(parts)-1) {
+			return false
+		}
+	}
+	return true
+}
+
+// ocidSegmentOK reports whether s is made only of [A-Za-z0-9_-] and, when
+// nonEmpty, is not empty.
+func ocidSegmentOK(s string, nonEmpty bool) bool {
+	if nonEmpty && s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// ocidPrefixForKind is the OCID prefix a kind's resources must carry: OCI names
+// the type segment after the resource ("ocid1.vcn.", "ocid1.subnet.",
+// "ocid1.instance."), which is the last segment of the CIC kind. Derived rather
+// than hard-coded so the check stays correct for every kind the module carries.
+func ocidPrefixForKind(kind string) string {
+	if i := strings.LastIndexByte(kind, ':'); i >= 0 && i+1 < len(kind) {
+		return "ocid1." + kind[i+1:] + "."
+	}
+	return "ocid1."
 }
 
 // actuateSigned is the shared sign-then-send core used by execute and observe:
@@ -1125,7 +1320,15 @@ func renderBody(c resourceContract, po providerOperation, config map[string]json
 
 // templatePath replaces each {param} segment with the bound resource id, so a
 // registry path like /vcns/{vcnId} targets the concrete resource.
+//
+// It is a single left-to-right pass over the path: the inserted id is copied
+// literally and is never scanned again, so an id that itself contains "{...}"
+// cannot make the substitution loop (it used to re-scan its own output without
+// end). For an id with no "{" the result is exactly what the previous
+// re-scanning loop produced. It does NOT escape the id: callers that hand it an
+// id from an untrusted source must validate it first (createdResourceID does).
 func templatePath(path, resourceID string) string {
+	var out strings.Builder
 	for {
 		i := strings.IndexByte(path, '{')
 		if i < 0 {
@@ -1135,9 +1338,12 @@ func templatePath(path, resourceID string) string {
 		if j < 0 {
 			break
 		}
-		path = path[:i] + resourceID + path[i+j+1:]
+		out.WriteString(path[:i])
+		out.WriteString(resourceID)
+		path = path[i+j+1:]
 	}
-	return path
+	out.WriteString(path)
+	return out.String()
 }
 
 func firstNonEmpty(a, b string) string {
