@@ -62,6 +62,13 @@ jobs:
       - name: Verify committed WASM artifact integrity (hash == buildHash, before any build)
         run: make wasm.integrity-verify
 
+      # Build the guest fresh to a scratch path (the tracked module.wasm and
+      # project.yaml are not touched) and require the real-WASM Call tests to PASS
+      # against it. These tests skip when CIC_MODULE_WASM_PATH is unset, so the
+      # plain `make wasm.test` below does not run them.
+      - name: Fresh guest - build to a scratch path and require the real-WASM tests to pass
+        run: make wasm.test-fresh
+
       - name: Check internal documentation links
         run: make docs.link-check
 

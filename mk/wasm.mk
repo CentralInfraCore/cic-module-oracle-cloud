@@ -7,7 +7,7 @@
 # `-target wasi` via WASM_TARGET below and adjust module/abi.go's build tag to
 # match.
 
-.PHONY: wasm.build wasm.test wasm.buildhash wasm.integrity-verify wasm.repro-probe wasm.rebuild-verify
+.PHONY: wasm.build wasm.test wasm.test-fresh wasm.buildhash wasm.integrity-verify wasm.repro-probe wasm.rebuild-verify
 
 WASM_TARGET ?= wasip1
 WASM_OUT    := module/module.wasm
@@ -41,6 +41,22 @@ wasm.integrity-verify: ## Verify sha256(committed module.wasm) == project.yaml m
 	@echo "--- Verifying WASM artifact integrity (hash == buildHash) ---"
 	@test -f $(WASM_OUT) || { echo "$(WASM_OUT) not found — run 'make wasm.build' first"; exit 1; }
 	docker compose exec -T builder sh -eu -c 'cd /app && sh tools/wasm_integrity_gate.sh $(WASM_OUT) project.yaml'
+
+# Fresh guest, scratch path (issue #37). Builds the guest from the current sources to
+# WASM_FRESH_OUT (outside the repository, so the tracked module/module.wasm and
+# project.yaml are never touched) and runs the module tests against that binary via
+# CIC_MODULE_WASM_PATH. Every test in WASM_FRESH_REQUIRED_TESTS must PASS: a skipped
+# test exits 0 in `go test`, so tools/wasm_assert_tests_passed.sh checks the log.
+WASM_FRESH_OUT := /tmp/cic-fresh-guest/module.wasm
+WASM_FRESH_REQUIRED_TESTS := \
+	TestHostLoadExecuteCreateCarriesOCID \
+	TestHostLoadExecuteCreateWithoutIDFails \
+	TestHostLoadExecuteCreateRefusesDuplicateID \
+	TestHostLoadExecuteUpdateHasNoResourceID
+
+wasm.test-fresh: ## Build the guest to a scratch path and require the real-WASM Call tests to PASS (never touches module.wasm / project.yaml)
+	@echo "--- Fresh guest: build to $(WASM_FRESH_OUT) and run the real-WASM tests ---"
+	docker compose exec -T builder sh -eu -c 'cd /app && WASM_FRESH_OUT=$(WASM_FRESH_OUT) WASM_TARGET=$(WASM_TARGET) sh tools/wasm_fresh_guest_test.sh $(WASM_FRESH_REQUIRED_TESTS)'
 
 # Reproducibility probe (supply-chain hardening, NON-FATAL). Rebuild to a
 # scratch path and REPORT whether this environment reproduces the committed
