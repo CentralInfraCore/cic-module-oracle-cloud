@@ -3,8 +3,10 @@
 Two scripts are involved. tools/wasm_assert_tests_passed.sh decides, from a
 `go test -v` log, whether the required real-WASM tests really PASSED (go test exits 0
 on a skip, so the exit code alone is not evidence). tools/wasm_fresh_guest_test.sh builds
-the guest to a scratch path; it must refuse any output path that could overwrite a
-tracked file. Neither of these checks needs TinyGo.
+the guest in a private scratch directory that it creates itself, so that no caller-chosen
+path (a symlink, a ".." component) can lead it into the repository. Neither of these
+checks needs TinyGo: the scratch tests run the script with a PATH that has none, so it
+stops at the build, after the guards.
 """
 
 import subprocess
@@ -87,42 +89,116 @@ def test_usage_errors_are_not_a_pass(tmp_path):
     assert _assert(_log(tmp_path, _all("PASS")), []).returncode == 2
 
 
-def _fresh(out, root):
-    env = {"WASM_FRESH_OUT": out, "APP_ROOT": str(root), "PATH": "/usr/bin:/bin"}
+SENTINEL = "TRACKED-ARTIFACT-SENTINEL"
+
+
+def _repo(tmp_path):
+    """A fake repository root with a tracked module/module.wasm that must survive."""
+    app = tmp_path / "app"
+    (app / "module").mkdir(parents=True)
+    (app / "module" / "module.wasm").write_text(SENTINEL)
+    return app
+
+
+def _base(tmp_path):
+    base = tmp_path / "base"
+    base.mkdir()
+    return base
+
+
+def _run(app, **env):
+    full = {"APP_ROOT": str(app), "PATH": "/usr/bin:/bin"}
+    full.update({k: str(v) for k, v in env.items()})
     return subprocess.run(
-        ["sh", str(FRESH), "TestX"], env=env, capture_output=True, text=True
+        ["sh", str(FRESH), "TestX"], env=full, capture_output=True, text=True
     )
 
 
-def test_a_scratch_path_inside_the_repository_is_refused(tmp_path):
-    for out in (
-        str(tmp_path / "module" / "module.wasm"),
-        str(tmp_path / "anything.wasm"),
-        str(tmp_path),
-    ):
-        done = _fresh(out, tmp_path)
-        assert done.returncode == 2, (out, done.stderr)
-        assert "inside the repository" in done.stderr
+def _sentinel_intact(app):
+    path = app / "module" / "module.wasm"
+    return path.is_file() and path.read_text() == SENTINEL
 
 
-def test_a_relative_scratch_path_is_refused(tmp_path):
-    done = _fresh("module/module.wasm", tmp_path)
-    assert done.returncode == 2
-    assert "absolute path" in done.stderr
+def _leftovers(directory):
+    return sorted(p.name for p in directory.iterdir() if "cic-fresh-guest" in p.name)
+
+
+def test_a_symlinked_output_path_cannot_delete_a_tracked_file(tmp_path):
+    # The attack from the review of PR #38: a directory outside the repository is a
+    # symlink into it. An output path chosen by the caller used to reach the tracked
+    # file through it; the script must no longer take an output path at all.
+    app = _repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "link").symlink_to(app / "module")
+    done = _run(
+        app,
+        WASM_FRESH_OUT=outside / "link" / "module.wasm",
+        WASM_FRESH_TMP=_base(tmp_path),
+    )
+    assert _sentinel_intact(app), done.stderr
+    assert done.returncode != 0
+
+
+def test_dotdot_in_an_output_path_cannot_delete_a_tracked_file(tmp_path):
+    app = _repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sneaky = str(outside) + "/../app/module/module.wasm"
+    done = _run(app, WASM_FRESH_OUT=sneaky, WASM_FRESH_TMP=_base(tmp_path))
+    assert _sentinel_intact(app), done.stderr
+    assert done.returncode != 0
+
+
+def test_a_scratch_base_that_is_a_symlink_into_the_repository_is_refused(tmp_path):
+    app = _repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "link").symlink_to(app / "module")
+    done = _run(app, WASM_FRESH_TMP=outside / "link")
+    assert done.returncode == 2, done.stderr
+    assert "inside the repository" in done.stderr
+    assert _sentinel_intact(app)
+    assert _leftovers(app / "module") == [], "nothing may be left inside the repository"
+
+
+def test_a_scratch_base_inside_the_repository_is_refused(tmp_path):
+    app = _repo(tmp_path)
+    done = _run(app, WASM_FRESH_TMP=app / "module")
+    assert done.returncode == 2, done.stderr
+    assert "inside the repository" in done.stderr
+    assert _sentinel_intact(app)
+    assert _leftovers(app / "module") == []
+
+
+def test_a_relative_or_missing_scratch_base_is_refused(tmp_path):
+    app = _repo(tmp_path)
+    relative = _run(app, WASM_FRESH_TMP="scratch")
+    assert relative.returncode == 2
+    assert "absolute" in relative.stderr
+    missing = _run(app, WASM_FRESH_TMP=tmp_path / "does-not-exist")
+    assert missing.returncode == 2
+    assert _sentinel_intact(app)
+
+
+def test_the_private_scratch_directory_is_removed_even_when_the_build_fails(tmp_path):
+    app = _repo(tmp_path)
+    base = _base(tmp_path)
+    done = _run(app, WASM_FRESH_TMP=base)
+    assert done.returncode != 0  # no TinyGo on this PATH: it stops at the build
+    assert _leftovers(base) == [], "the scratch directory must not outlive the run"
+    assert _sentinel_intact(app)
 
 
 def test_no_required_test_name_is_a_usage_error(tmp_path):
-    env = {"APP_ROOT": str(tmp_path), "PATH": "/usr/bin:/bin"}
+    env = {"APP_ROOT": str(_repo(tmp_path)), "PATH": "/usr/bin:/bin"}
     done = subprocess.run(["sh", str(FRESH)], env=env, capture_output=True, text=True)
     assert done.returncode == 2
 
 
-def test_the_make_default_scratch_path_is_outside_the_repository():
+def test_the_make_target_does_not_let_the_caller_choose_an_output_path():
     text = MK.read_text()
-    line = next(x for x in text.splitlines() if x.startswith("WASM_FRESH_OUT"))
-    value = line.split(":=", 1)[1].strip()
-    assert value.startswith("/tmp/")
-    assert "module/module.wasm" not in value
+    assert "WASM_FRESH_OUT" not in text
 
 
 def test_the_make_target_requires_exactly_the_four_real_wasm_tests():
