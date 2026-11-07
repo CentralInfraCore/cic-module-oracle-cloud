@@ -923,9 +923,15 @@ type executionStep struct {
 	Etag          string `json:"etag,omitempty"`
 	OpcRequestID  string `json:"opc_request_id,omitempty"`
 	WorkRequestID string `json:"work_request_id,omitempty"` // set when the op is async (202); poll it
-	Error         string `json:"error,omitempty"`
-	ErrorClass    string `json:"error_class,omitempty"`   // CIC class (conflict/not-found/…)
-	ProviderCode  string `json:"provider_code,omitempty"` // OCI-native code, verbatim
+	// ResourceID is the OCID of the resource a role="create" step created, read
+	// from the create response's own "id". Set on create steps only, so every
+	// other step's bytes are unchanged (omitempty). It is NEVER echoed from
+	// binding.resource_id: a create's path carries no resource id (/vcns), so the
+	// binding cannot know it — only the provider's answer can.
+	ResourceID   string `json:"resource_id,omitempty"`
+	Error        string `json:"error,omitempty"`
+	ErrorClass   string `json:"error_class,omitempty"`   // CIC class (conflict/not-found/…)
+	ProviderCode string `json:"provider_code,omitempty"` // OCI-native code, verbatim
 }
 
 // ociError maps an OCI error response to a CIC provider-error. OCI 4xx/5xx bodies
@@ -1030,7 +1036,65 @@ func executeOne(c resourceContract, po providerOperation, config map[string]json
 		step.Error, step.ErrorClass, step.ProviderCode = pe.Message, pe.Class, pe.ProviderCode
 		return step, true
 	}
+	// A create is the one step whose outcome cannot be re-derived from its input:
+	// the new resource's OCID exists only in the provider's answer, and a caller
+	// that loses it cannot observe, update or destroy what it just made. So a
+	// create that answered 2xx without a usable id is a FAILED step, not a silent
+	// success — see createdResourceID for why that is the safe direction.
+	if c.operations[po.Operation].role == roleCreate {
+		id, pe := createdResourceID(c.kind, respBody)
+		if pe != nil {
+			step.Error, step.ErrorClass, step.ProviderCode = pe.Message, pe.Class, pe.ProviderCode
+			return step, true
+		}
+		step.ResourceID = id
+	}
 	return step, false
+}
+
+// createdResourceID extracts the created resource's OCID from a create
+// response's "id". It never invents or guesses one: every answer it cannot read
+// as a well-formed id of the expected kind is an error.
+//
+// Failing is deliberate and it is the SAFE direction. The provider answered 2xx,
+// so the resource very likely exists while its id is lost to us; the message
+// says so, because the tempting repair — call create again — would create a
+// SECOND resource. There is no retry here, by design: Execute runs the approved
+// plan verbatim and the recovery decision (reconcile by listing, or discard)
+// belongs to the caller, who alone knows the intent.
+func createdResourceID(kind string, body []byte) (string, *providerError) {
+	fail := func(detail string) *providerError {
+		return &providerError{
+			Class: classProvider, Retryable: false,
+			Message: "create returned 2xx, so the resource was created, but its id is unknown (" +
+				detail + "); do NOT retry the create — a second create would duplicate the " +
+				"resource. Reconcile against the provider (list/read) to recover the id.",
+		}
+	}
+	var resp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fail("the response body is not a JSON object: " + err.Error())
+	}
+	if resp.ID == "" {
+		return "", fail(`the response body carries no non-empty "id"`)
+	}
+	if prefix := ocidPrefixForKind(kind); !strings.HasPrefix(resp.ID, prefix) || len(resp.ID) == len(prefix) {
+		return "", fail("the id " + strconv.Quote(resp.ID) + " is not of the form " + prefix + "<...>")
+	}
+	return resp.ID, nil
+}
+
+// ocidPrefixForKind is the OCID prefix a kind's resources must carry: OCI names
+// the type segment after the resource ("ocid1.vcn.", "ocid1.subnet.",
+// "ocid1.instance."), which is the last segment of the CIC kind. Derived rather
+// than hard-coded so the check stays correct for every kind the module carries.
+func ocidPrefixForKind(kind string) string {
+	if i := strings.LastIndexByte(kind, ':'); i >= 0 && i+1 < len(kind) {
+		return "ocid1." + kind[i+1:] + "."
+	}
+	return "ocid1."
 }
 
 // actuateSigned is the shared sign-then-send core used by execute and observe:
