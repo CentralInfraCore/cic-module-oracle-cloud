@@ -189,6 +189,9 @@ no sign and no actuate call.
   provider operations in the same order; the three digests (`plan_digest`,
   `target_digest`, `execution_digest`) to equal the ones computed from the request;
   `config.data` to be the same JSON value as `desired.data`; and no retired `plan_id`.
+  A create (no observed state, no resource id) additionally needs a desired config the
+  kind's contract accepts: required fields present, no field a caller cannot set, no
+  gross type error.
   The details are in `plan-digest.md`. This shows the request is internally consistent,
   not that it was approved or that it has not run before.
 

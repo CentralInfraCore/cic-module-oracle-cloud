@@ -73,6 +73,15 @@ resource id is required follows the lifecycle:
 | state | empty | refused (`target.resource_id`): an existing resource needs its id |
 | state | present | the diff: `noop`, `update`, `action` or `replace` |
 
+A create is planned from the desired config alone, so `plan` first requires that config
+to be one the kind's contract accepts, and `execute` (which derives the plan again)
+refuses it the same way: a missing required field (`validation`), a field no caller may
+set or a gross type error (`schema`), each as `desired.data.<field>`; when there are
+several problems the first by field path is named, so the answer does not depend on map
+order. The check is the coarse one `validate` already does (required, known, JSON kind),
+not a JSON Schema engine. An update is not held to the "required" rule: it is judged
+by what changed.
+
 The second row keeps the guard from cic-module-oracle-cloud#31: an empty observed
 state can no longer be read as "every field changed" for a resource that was never
 created.

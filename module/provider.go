@@ -497,6 +497,19 @@ func planFromRequest(req planRequest, targetField string) (executionPlan, *provi
 	// changed" and could escalate to a replace that deleted a resource never created).
 	switch {
 	case len(observed) == 0 && req.Target.ResourceID == "":
+		// A create is planned from nothing but the desired config, so the plan
+		// must not exist for a config the kind's contract does not accept: a
+		// missing required field, a field the caller cannot set, a gross type
+		// error. (An update diffs against an existing resource and is judged
+		// by what changed; Validate is where a partial intent is reviewed.)
+		if errs := conformIntent(c, req.Desired); len(errs) > 0 {
+			// conformIntent walks a map: the refusal names the first error by field
+			// path, so the same request always gets the same answer.
+			sort.Slice(errs, func(i, j int) bool { return errs[i].FieldPath < errs[j].FieldPath })
+			pe := errs[0]
+			pe.FieldPath = "desired.data" + strings.TrimPrefix(pe.FieldPath, "intent.data")
+			return executionPlan{}, &pe
+		}
 		name, h, ok := c.opByRole(roleCreate)
 		if !ok {
 			return executionPlan{}, &providerError{Class: classInternal, Message: "no create operation for kind " + req.Kind}

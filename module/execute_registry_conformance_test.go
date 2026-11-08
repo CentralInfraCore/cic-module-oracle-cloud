@@ -202,12 +202,12 @@ func TestExecuteStillRunsEveryDerivablePlanWithTheRegistrysMethodAndPath(t *test
 			{"replace", `{"dnsLabel":"a"}`, `{"dnsLabel":"b"}`},
 		},
 		"cic:network:subnet": {
-			{"create", `{"compartmentId":"ocid1.compartment..c"}`, `{}`},
+			{"create", `{"compartmentId":"ocid1.compartment..c","vcnId":"ocid1.vcn..v"}`, `{}`},
 			{"update", `{"displayName":"new"}`, `{"displayName":"old"}`},
 			{"action", `{"compartmentId":"ocid1.compartment..b"}`, `{"compartmentId":"ocid1.compartment..a"}`},
 		},
 		"cic:compute:instance": {
-			{"create", `{"compartmentId":"ocid1.compartment..c"}`, `{}`},
+			{"create", `{"compartmentId":"ocid1.compartment..c","availabilityDomain":"AD-1"}`, `{}`},
 			{"update", `{"displayName":"new"}`, `{"displayName":"old"}`},
 			{"action", `{"compartmentId":"ocid1.compartment..b"}`, `{"compartmentId":"ocid1.compartment..a"}`},
 		},
