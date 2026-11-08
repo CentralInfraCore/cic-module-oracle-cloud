@@ -724,7 +724,10 @@ func Invoke(auth, data []byte) ([]byte, error) {
 
 type pollRequest struct {
 	Binding execBinding `json:"binding"`
-	Path    string      `json:"path"` // the work-request path to GET (from an async result)
+	// WorkRequestID is the id an async execute step returned (work_request_id).
+	WorkRequestID string `json:"work_request_id,omitempty"`
+	// Path is the legacy alias: only "/<api version>/workRequests/<id>" is accepted.
+	Path string `json:"path,omitempty"`
 }
 
 type pollResult struct {
@@ -734,18 +737,28 @@ type pollResult struct {
 	HTTPStatus      int    `json:"http_status"`
 }
 
-// Poll GETs an OCI Work Request (path supplied from an async execute result) and
-// reports its lifecycle. terminal is true once the job reached SUCCEEDED, FAILED,
-// or CANCELED — the caller stops polling then.
+// Poll GETs an OCI Work Request and reports its lifecycle. terminal is true once the
+// job reached SUCCEEDED, FAILED, or CANCELED — the caller stops polling then.
+//
+// The target of this signed GET is never chosen by the caller. The module builds it
+// from a Work Request id (the work_request_id an async execute step returns) and the
+// API version in binding.base_path. The legacy `path` field is only an alias: it must
+// be exactly "/<api version>/workRequests/<id>" and is reduced to the same id and the
+// same canonical path, so it is not a second, looser route. Exactly one of the two
+// inputs is accepted. Everything is decided before anything is signed or sent.
 func Poll(auth, data []byte) ([]byte, error) {
 	var req pollRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return errResult(&providerError{Class: classValidation, Message: "poll-request is not valid JSON: " + err.Error()})
 	}
-	if req.Binding.Host == "" || req.Binding.KeyID == "" || req.Path == "" {
-		return errResult(&providerError{Class: classValidation, FieldPath: "binding/path", Message: "binding.host, binding.key_id and path are required"})
+	if req.Binding.Host == "" || req.Binding.KeyID == "" {
+		return errResult(&providerError{Class: classValidation, FieldPath: "binding", Message: "binding.host and binding.key_id are required"})
 	}
-	status, _, respBody, err := actuateSigned("GET", req.Binding.Host, req.Path, req.Binding.KeyID, nil, nowFunc().Format(ociTimeFormat), "")
+	path, perr := pollTargetPath(req)
+	if perr != nil {
+		return errResult(perr)
+	}
+	status, _, respBody, err := actuateSigned("GET", req.Binding.Host, path, req.Binding.KeyID, nil, nowFunc().Format(ociTimeFormat), "")
 	if err != nil {
 		return errResult(&providerError{Class: classTransport, Message: err.Error()})
 	}
@@ -776,6 +789,75 @@ func Poll(auth, data []byte) ([]byte, error) {
 	})
 }
 
+// pollTargetPath returns the canonical request path for a poll request, or a
+// validation error. Both inputs go through canonicalWorkRequestPath.
+func pollTargetPath(req pollRequest) (string, *providerError) {
+	if (req.WorkRequestID == "") == (req.Path == "") {
+		return "", &providerError{Class: classValidation, FieldPath: "work_request_id",
+			Message: "exactly one of work_request_id and path is required"}
+	}
+	if req.WorkRequestID != "" {
+		path, badVersion, badID := canonicalWorkRequestPath(req.Binding.BasePath, req.WorkRequestID)
+		if badVersion {
+			return "", &providerError{Class: classValidation, FieldPath: "binding.base_path",
+				Message: "binding.base_path must be an API version such as /20160918 to poll by work_request_id (got \"" + shortASCII(req.Binding.BasePath) + "\")"}
+		}
+		if badID {
+			return "", &providerError{Class: classValidation, FieldPath: "work_request_id",
+				Message: "work_request_id is not a well-formed OCID (got \"" + shortASCII(req.WorkRequestID) + "\")"}
+		}
+		return path, nil
+	}
+	// Legacy alias: exactly "/<version>/workRequests/<id>". Splitting on "/" leaves
+	// nothing to hide in: an extra segment, a trailing slash or an empty id changes
+	// the part count, and a query, fragment or escape ends up inside the id, where
+	// the OCID rule refuses it.
+	bad := func() (string, *providerError) {
+		return "", &providerError{Class: classValidation, FieldPath: "path",
+			Message: "path must be exactly /<api version>/workRequests/<work request id> (got \"" + shortASCII(req.Path) + "\")"}
+	}
+	parts := strings.Split(req.Path, "/")
+	if len(parts) != 4 || parts[0] != "" || parts[2] != "workRequests" {
+		return bad()
+	}
+	version := "/" + parts[1]
+	if req.Binding.BasePath != "" && req.Binding.BasePath != version {
+		return bad()
+	}
+	path, badVersion, badID := canonicalWorkRequestPath(version, parts[3])
+	if badVersion || badID {
+		return bad()
+	}
+	return path, nil
+}
+
+// canonicalWorkRequestPath is the one place a Work Request path is built and
+// checked: version must be "/" and 8 digits (an OCI API version such as /20160918),
+// id a well-formed OCID of ANY type (OCI documents several Work Request types, so
+// there is no allow-list). It says nothing about who may poll that Work Request or
+// whether it belongs to a plan: those are other layers.
+func canonicalWorkRequestPath(version, id string) (path string, badVersion, badID bool) {
+	badVersion = !apiVersionOK(version)
+	badID = !wellFormedOCID("", id)
+	if badVersion || badID {
+		return "", badVersion, badID
+	}
+	return version + "/workRequests/" + id, false, false
+}
+
+// apiVersionOK reports whether v is "/" followed by exactly 8 ASCII digits.
+func apiVersionOK(v string) bool {
+	if len(v) != 9 || v[0] != '/' {
+		return false
+	}
+	for i := 1; i < 9; i++ {
+		if v[i] < '0' || v[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func isTerminalWorkStatus(s string) bool {
 	switch strings.ToUpper(s) {
 	case "SUCCEEDED", "FAILED", "CANCELED", "CANCELLED":
@@ -785,11 +867,6 @@ func isTerminalWorkStatus(s string) bool {
 	}
 }
 
-// validateBindingResourceID is the first layer of the binding contract: the id a
-// caller supplies in binding.resource_id is spliced into a SIGNED request path, so
-// it must be a well-formed OCID of the kind's type, decided before anything is
-// signed or sent. It says nothing about whether the id is the right resource or
-// whether the caller may act on it: those are other layers.
 // shortASCII returns s cut to 40 bytes with every control or non-ASCII byte shown
 // as "?", so a caller-supplied string can be quoted in an error as one short line.
 func shortASCII(s string) string {
@@ -834,6 +911,11 @@ func checkPlanAgainstRegistry(c resourceContract, ops []providerOperation) *prov
 	return nil
 }
 
+// validateBindingResourceID is the first layer of the binding contract: the id a
+// caller supplies in binding.resource_id is spliced into a SIGNED request path, so
+// it must be a well-formed OCID of the kind's type, decided before anything is
+// signed or sent. It says nothing about whether the id is the right resource or
+// whether the caller may act on it: those are other layers.
 func validateBindingResourceID(kind, id string) *providerError {
 	if wellFormedOCID(kind, id) {
 		return nil
@@ -1268,6 +1350,9 @@ const maxOCIDLen = 255
 // "ocid1.vcn.oc1..xyz") but the unique id may not. Nothing else is accepted:
 // the id is later spliced into a SIGNED request path, so it must never carry
 // "/", "?", "#", "%", "{", "}", whitespace or any non-ASCII byte.
+//
+// An empty kind accepts any non-empty, well-formed type segment (used for Work
+// Request ids, whose type OCI documents as several different values).
 func wellFormedOCID(kind, id string) bool {
 	if len(id) > maxOCIDLen {
 		return false

@@ -218,8 +218,11 @@ OCI_POLL_PATH=/20160918/workRequests/ocid1.workrequest... \
 REAL_OCI_TEST=1 go test -tags manual_real_oci -count=1 -run TestManualRealOCIPoll -v ./module/
 ```
 
-`OCI_POLL_PATH` needs the API version prefix — Poll GETs it verbatim, unlike
-`Observe`/`Execute` which prepend `binding.base_path` to a registry path. Get a
+`OCI_POLL_PATH` needs the API version prefix and must be exactly
+`/<api version>/workRequests/<id>`: `Poll` accepts it as a legacy alias of
+`work_request_id`, validates it and rebuilds the path itself (it no longer GETs an
+arbitrary path verbatim). `Observe`/`Execute` prepend `binding.base_path` to a
+registry path. Get a
 live path from an async execute step's `work_request_id`
 (`LaunchInstance`/`TerminateInstance` give one; `CreateVcn`/`UpdateVcn` don't —
 see the `poll` coverage row above).
