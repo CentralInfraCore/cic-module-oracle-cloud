@@ -7,7 +7,7 @@
 # `-target wasi` via WASM_TARGET below and adjust module/abi.go's build tag to
 # match.
 
-.PHONY: wasm.build wasm.test wasm.buildhash wasm.integrity-verify wasm.repro-probe wasm.rebuild-verify
+.PHONY: wasm.build wasm.test wasm.test-fresh wasm.buildhash wasm.integrity-verify wasm.repro-probe wasm.rebuild-verify
 
 WASM_TARGET ?= wasip1
 WASM_OUT    := module/module.wasm
@@ -37,22 +37,28 @@ wasm.buildhash: ## Compute sha256(module.wasm) -> project.yaml metadata.buildHas
 # reproduction. Cross-environment bit-reproducibility is NOT required by the
 # trust chain and is not achievable from TinyGo's flags alone (issue #2); the
 # reproducibility signal lives in the non-fatal wasm.repro-probe below.
-wasm.integrity-verify: ## Verify sha256(committed module.wasm) == project.yaml metadata.buildHash (no rebuild)
+wasm.integrity-verify: ## Verify sha256(committed module.wasm) == project.yaml metadata.buildHash (no rebuild; run BEFORE wasm.build)
 	@echo "--- Verifying WASM artifact integrity (hash == buildHash) ---"
 	@test -f $(WASM_OUT) || { echo "$(WASM_OUT) not found — run 'make wasm.build' first"; exit 1; }
-	docker compose exec -T builder sh -eu -o pipefail -c \
-		'cd /app && ART_HASH=$$(sha256sum $(WASM_OUT) | cut -d" " -f1) && \
-		EXPECTED_HASH=$$(grep -E "^[[:space:]]*buildHash:" project.yaml | sed -E "s/^[[:space:]]*buildHash:[[:space:]]*//") && \
-		echo "artifact sha256:        $$ART_HASH" && \
-		echo "project.yaml buildHash: $$EXPECTED_HASH" && \
-		if [ "$$ART_HASH" != "$$EXPECTED_HASH" ]; then \
-			echo "FATAL: committed module.wasm does not match project.yaml metadata.buildHash" >&2; \
-			echo "  artifact: $$ART_HASH" >&2; \
-			echo "  declared: $$EXPECTED_HASH" >&2; \
-			echo "The signed artifact and its declared hash disagree. Run \"make wasm.build\" to refresh both, then commit." >&2; \
-			exit 1; \
-		fi; \
-		echo "OK: artifact integrity verified"'
+	docker compose exec -T builder sh -eu -c 'cd /app && sh tools/wasm_integrity_gate.sh $(WASM_OUT) project.yaml'
+
+# Fresh guest, private scratch directory (issue #37). Builds the guest from the current
+# sources in a directory that tools/wasm_fresh_guest_test.sh creates itself with
+# mktemp -d and removes afterwards, so the tracked module/module.wasm and
+# project.yaml are never touched; the caller does not choose the output path (a
+# symlink or ".." could lead it into the repository). The module tests then run
+# against that binary via CIC_MODULE_WASM_PATH. Every test in
+# WASM_FRESH_REQUIRED_TESTS must PASS: a skipped test exits 0 in `go test`, so
+# tools/wasm_assert_tests_passed.sh checks the log.
+WASM_FRESH_REQUIRED_TESTS := \
+	TestHostLoadExecuteCreateCarriesOCID \
+	TestHostLoadExecuteCreateWithoutIDFails \
+	TestHostLoadExecuteCreateRefusesDuplicateID \
+	TestHostLoadExecuteUpdateHasNoResourceID
+
+wasm.test-fresh: ## Build the guest in a private scratch directory and require the real-WASM Call tests to PASS (never touches module.wasm / project.yaml)
+	@echo "--- Fresh guest: build in a private scratch directory and run the real-WASM tests ---"
+	docker compose exec -T builder sh -eu -c 'cd /app && WASM_TARGET=$(WASM_TARGET) sh tools/wasm_fresh_guest_test.sh $(WASM_FRESH_REQUIRED_TESTS)'
 
 # Reproducibility probe (supply-chain hardening, NON-FATAL). Rebuild to a
 # scratch path and REPORT whether this environment reproduces the committed

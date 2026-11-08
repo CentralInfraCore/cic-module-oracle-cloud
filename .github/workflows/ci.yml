@@ -55,6 +55,20 @@ jobs:
       - name: Verify repository manifest
         run: make manifest-verify
 
+      # The committed WASM artifact must be checked as it is in the checkout, BEFORE
+      # any step rebuilds module/module.wasm or rewrites buildHash (`make wasm.build`
+      # below does both). After that step the check would only compare files that
+      # were just created together (issue #37).
+      - name: Verify committed WASM artifact integrity (hash == buildHash, before any build)
+        run: make wasm.integrity-verify
+
+      # Build the guest fresh to a scratch path (the tracked module.wasm and
+      # project.yaml are not touched) and require the real-WASM Call tests to PASS
+      # against it. These tests skip when CIC_MODULE_WASM_PATH is unset, so the
+      # plain `make wasm.test` below does not run them.
+      - name: Fresh guest - build to a scratch path and require the real-WASM tests to pass
+        run: make wasm.test-fresh
+
       - name: Check internal documentation links
         run: make docs.link-check
 
@@ -69,9 +83,6 @@ jobs:
 
       - name: Build WASM guest module (TinyGo)
         run: make wasm.build
-
-      - name: Verify WASM artifact integrity (hash == buildHash)
-        run: make wasm.integrity-verify
 
       - name: WASM reproducibility probe (non-fatal, issue #2)
         run: make wasm.repro-probe
