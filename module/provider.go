@@ -681,6 +681,9 @@ func Invoke(auth, data []byte) ([]byte, error) {
 	if req.Binding.Host == "" || req.Binding.KeyID == "" || req.Binding.ResourceID == "" {
 		return errResult(&providerError{Class: classValidation, FieldPath: "binding", Message: "binding.host, binding.key_id and binding.resource_id are required"})
 	}
+	if pe := validateBindingResourceID(req.Kind, req.Binding.ResourceID); pe != nil {
+		return errResult(pe)
+	}
 	op, ok := c.operations[req.Operation]
 	if !ok {
 		return errResult(&providerError{Class: classValidation, FieldPath: "operation", Message: "unknown operation for kind: " + req.Operation})
@@ -782,6 +785,29 @@ func isTerminalWorkStatus(s string) bool {
 	}
 }
 
+// validateBindingResourceID is the first layer of the binding contract: the id a
+// caller supplies in binding.resource_id is spliced into a SIGNED request path, so
+// it must be a well-formed OCID of the kind's type, decided before anything is
+// signed or sent. It says nothing about whether the id is the right resource or
+// whether the caller may act on it: those are other layers.
+func validateBindingResourceID(kind, id string) *providerError {
+	if wellFormedOCID(kind, id) {
+		return nil
+	}
+	shown := id
+	if len(shown) > 40 {
+		shown = shown[:40] + "..."
+	}
+	shown = strings.Map(func(r rune) rune {
+		if r < 0x20 || r > 0x7e {
+			return '?'
+		}
+		return r
+	}, shown)
+	return &providerError{Class: classValidation, FieldPath: "binding.resource_id",
+		Message: "binding.resource_id is not a well-formed OCID of the type for " + kind + " (got \"" + shown + "\")"}
+}
+
 // resolveOp looks up a resource's lifecycle operation by role (read/create/
 // update/delete — see roleRead etc.) and validates the binding — shared by the
 // CRUD ops. Returns the operation's actual registry name (LaunchInstance,
@@ -793,6 +819,9 @@ func resolveOp(kind, role string, b execBinding) (string, httpOp, *providerError
 	}
 	if b.Host == "" || b.KeyID == "" || b.ResourceID == "" {
 		return "", httpOp{}, &providerError{Class: classValidation, FieldPath: "binding", Message: "binding.host, binding.key_id and binding.resource_id are required"}
+	}
+	if pe := validateBindingResourceID(kind, b.ResourceID); pe != nil {
+		return "", httpOp{}, pe
 	}
 	name, op, ok := c.opByRole(role)
 	if !ok {
@@ -837,6 +866,9 @@ func Observe(auth, data []byte) ([]byte, error) {
 	c, ok := resourceContracts()[req.Kind]
 	if !ok {
 		return errResult(&providerError{Class: classValidation, FieldPath: "kind", Message: "no contract for kind " + req.Kind})
+	}
+	if pe := validateBindingResourceID(req.Kind, req.Binding.ResourceID); pe != nil {
+		return errResult(pe)
 	}
 	_, getOp, ok := c.opByRole(roleRead)
 	if !ok {
@@ -992,6 +1024,21 @@ func Execute(auth, data []byte) ([]byte, error) {
 	config, err := decodeObject(req.Config.Data)
 	if err != nil {
 		return errResult(&providerError{Class: classSchema, FieldPath: "config.data", Message: err.Error()})
+	}
+
+	// binding.resource_id is spliced into the path of every step whose EXECUTED path
+	// has a placeholder (templatePath), and into every step the registry does not
+	// know as a create. The decision follows the path that will really be sent, not
+	// only the role of the operation NAME: a plan may carry a create's name with a
+	// path that needs the id. Decide once, before any step runs, so a plan never
+	// half-executes on a bad id. An unknown operation name counts as non-create.
+	for _, po := range req.Plan.ProviderOperations {
+		if c.operations[po.Operation].role != roleCreate || pathSplicesID(po.Path) {
+			if pe := validateBindingResourceID(req.Kind, req.Binding.ResourceID); pe != nil {
+				return errResult(pe)
+			}
+			break
+		}
 	}
 
 	date := nowFunc().Format(ociTimeFormat)
@@ -1327,6 +1374,14 @@ func renderBody(c resourceContract, po providerOperation, config map[string]json
 // end). For an id with no "{" the result is exactly what the previous
 // re-scanning loop produced. It does NOT escape the id: callers that hand it an
 // id from an untrusted source must validate it first (createdResourceID does).
+// pathSplicesID reports whether templatePath would put the resource id into path.
+// It mirrors templatePath's own rule (a "{" followed later by a "}"), so the two
+// cannot disagree about what counts as a placeholder.
+func pathSplicesID(path string) bool {
+	i := strings.IndexByte(path, '{')
+	return i >= 0 && strings.IndexByte(path[i:], '}') >= 0
+}
+
 func templatePath(path, resourceID string) string {
 	var out strings.Builder
 	for {
