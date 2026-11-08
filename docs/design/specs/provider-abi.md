@@ -163,8 +163,7 @@ no sign and no actuate call.
   (`field_path: binding.resource_id`). The decision follows the executed path (a
   placeholder in it), not only the role of the operation name. A plan of create
   steps with plain paths does not need the id. `observe`, `invoke` and `destroy`
-  apply the same rule. `poll` is not covered: its path carries a Work Request id and
-  has its own contract (status: concept).
+  apply the same rule. `poll` has its own target rule, below.
 - **Registry conformance (M3, `field_path: plan.provider_operations[i]`).** Every
   step must name an operation the kind's registry defines, and its `method` and
   `path` must equal the registry's exactly (case, placeholder name, trailing slash;
@@ -177,6 +176,37 @@ no sign and no actuate call.
 What these checks do **not** say: whether the id names the right resource, whether
 the plan was approved, or whether the caller may run it. Those are the plan-binding
 and Relay-authorization layers (status: concept).
+
+### What `poll` accepts
+
+`poll` sends a signed GET, so the caller does not choose where it goes. The module
+builds the request path itself; a refusal is a `validation` error with no sign and
+no actuate call.
+
+- **Input.** Exactly one of `work_request_id` (the id an async `execute` step
+  returns, the primary input) and `path` (a legacy alias). Both, or neither, is
+  refused (`field_path: work_request_id`).
+- **Path.** `<api version>/workRequests/<id>`, where the api version is `/` and
+  8 digits. With `work_request_id` the version comes from `binding.base_path`, which
+  must then be exactly such a version (`field_path: binding.base_path`). The alias
+  must be exactly `/<api version>/workRequests/<id>`: no query, fragment, escape,
+  extra segment, trailing slash or other collection (`field_path: path`). If
+  `binding.base_path` is set, the alias version must equal it. Both inputs go through
+  one function that checks the id and builds the canonical path, so the alias is not a
+  second, looser route.
+- **Id.** A well-formed OCID of **any** type. OCI documents several Work Request
+  types (for example `workrequest`, `coreservicesworkrequest`,
+  `clustersworkrequest`), so there is no allow-list; the type actually returned by
+  the services this module drives has not been measured.
+- **Method.** Always `GET`, no body.
+- **Unchanged.** The response mapping: `work_status`, `percent_complete`,
+  `terminal`, `http_status`; an HTTP error maps to a CIC error; an undecodable body
+  is an error.
+
+What this does **not** say: that the Work Request belongs to the plan that started it,
+that the caller may poll it, or that `binding.host` is the right service host for
+that id. A syntactically valid id is not authorization (plan binding and Relay
+authorization: status concept; `host` and `base_path` contract: status concept).
 
 ## Error model
 
