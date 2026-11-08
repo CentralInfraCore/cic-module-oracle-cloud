@@ -1026,11 +1026,14 @@ func Execute(auth, data []byte) ([]byte, error) {
 		return errResult(&providerError{Class: classSchema, FieldPath: "config.data", Message: err.Error()})
 	}
 
-	// A step other than a create splices binding.resource_id into its path. Decide
-	// that once, before any step runs, so a plan never half-executes on a bad id.
-	// An operation the registry does not know counts as non-create.
+	// binding.resource_id is spliced into the path of every step whose EXECUTED path
+	// has a placeholder (templatePath), and into every step the registry does not
+	// know as a create. The decision follows the path that will really be sent, not
+	// only the role of the operation NAME: a plan may carry a create's name with a
+	// path that needs the id. Decide once, before any step runs, so a plan never
+	// half-executes on a bad id. An unknown operation name counts as non-create.
 	for _, po := range req.Plan.ProviderOperations {
-		if c.operations[po.Operation].role != roleCreate {
+		if c.operations[po.Operation].role != roleCreate || pathSplicesID(po.Path) {
 			if pe := validateBindingResourceID(req.Kind, req.Binding.ResourceID); pe != nil {
 				return errResult(pe)
 			}
@@ -1371,6 +1374,14 @@ func renderBody(c resourceContract, po providerOperation, config map[string]json
 // end). For an id with no "{" the result is exactly what the previous
 // re-scanning loop produced. It does NOT escape the id: callers that hand it an
 // id from an untrusted source must validate it first (createdResourceID does).
+// pathSplicesID reports whether templatePath would put the resource id into path.
+// It mirrors templatePath's own rule (a "{" followed later by a "}"), so the two
+// cannot disagree about what counts as a placeholder.
+func pathSplicesID(path string) bool {
+	i := strings.IndexByte(path, '{')
+	return i >= 0 && strings.IndexByte(path[i:], '}') >= 0
+}
+
 func templatePath(path, resourceID string) string {
 	var out strings.Builder
 	for {

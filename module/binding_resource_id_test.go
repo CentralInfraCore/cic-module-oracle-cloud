@@ -227,3 +227,59 @@ func TestTheRefusalDoesNotCarryTheRawBadID(t *testing.T) {
 		t.Errorf("the refusal message must stay one short line, got %d bytes: %q", len(res.Error.Message), res.Error.Message)
 	}
 }
+
+// The decision must follow the path that is actually executed, not the role the
+// registry gives the operation NAME: a plan can carry the name of a create with a
+// path that splices binding.resource_id (review of PR #39, F1).
+func TestACreateNamedStepWhosePathSplicesTheIDIsRefusedOnABadID(t *testing.T) {
+	cases := []struct {
+		name string
+		op   providerOperation
+	}{
+		{"create name, PUT with placeholder", providerOperation{Operation: "CreateVcn", Method: "PUT", Path: "/vcns/{vcnId}"}},
+		{"create name, DELETE with placeholder", providerOperation{Operation: "CreateVcn", Method: "DELETE", Path: "/vcns/{vcnId}"}},
+		{"create name, placeholder after a prefix", providerOperation{Operation: "CreateVcn", Method: "POST", Path: "/vcns/x/{id}/y"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mock := &cicFlowMock{Reply: replyWith(200, `{"id":"ocid1.vcn.oc1..created"}`, nil)}
+			restore := mock.wireHostSeam()
+			defer restore()
+			out, err := Execute(nil, marshalReq(t, executeRequest{
+				Kind:    bindingKind,
+				Plan:    executionPlan{ProviderOperations: []providerOperation{c.op}},
+				Config:  schemaPayload{Data: json.RawMessage(`{"compartmentId":"ocid1.compartment..c"}`)},
+				Binding: bindingWith("ocid1.vcn.oc1..a/../../x"),
+			}))
+			if err != nil {
+				t.Fatalf("Execute returned a Go error: %v", err)
+			}
+			res := decodeResult(t, out)
+			if res.Status != "error" || res.Error == nil || res.Error.Class != classValidation || res.Error.FieldPath != "binding.resource_id" {
+				t.Fatalf("status %q error %+v, want a binding.resource_id validation error", res.Status, res.Error)
+			}
+			if mock.signCount() != 0 || mock.actuateCount() != 0 {
+				t.Errorf("%d sign / %d actuate calls, want none", mock.signCount(), mock.actuateCount())
+			}
+		})
+	}
+}
+
+// A create-named step whose path has no placeholder still does not need the id.
+func TestACreateNamedStepWithAPlainPathStillIgnoresTheID(t *testing.T) {
+	mock := &cicFlowMock{Reply: replyWith(200, `{"id":"ocid1.vcn.oc1..created"}`, nil)}
+	restore := mock.wireHostSeam()
+	defer restore()
+	out, err := Execute(nil, marshalReq(t, executeRequest{
+		Kind:    bindingKind,
+		Plan:    executionPlan{ProviderOperations: []providerOperation{{Operation: "CreateVcn", Method: "POST", Path: "/vcns"}}},
+		Config:  schemaPayload{Data: json.RawMessage(`{"compartmentId":"ocid1.compartment..c"}`)},
+		Binding: bindingWith("not-an-ocid"),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := decodeResult(t, out); res.Status != "ok" {
+		t.Fatalf("status %q, want ok (error: %+v)", res.Status, res.Error)
+	}
+}
