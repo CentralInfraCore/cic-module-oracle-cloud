@@ -31,6 +31,10 @@ namespace it opens. Written 2026-07-18 from the design session recorded in
   computed over.
 - [specs/plan-digest.md](specs/plan-digest.md) — `plan_digest`, `target_digest`,
   `execution_digest` and the gate `execute` applies before it signs anything.
+- [specs/target-origin-and-path-safety.md](specs/target-origin-and-path-safety.md) — D5: a
+  measurement of what the module does with a caller-given `host` and `base_path`, and a
+  proposal (concept) for where target data should come from; probes and output in
+  [measurements/target-and-path/](measurements/target-and-path/README.md).
 - [specs/destroy-invoke-binding.md](specs/destroy-invoke-binding.md) — a measurement of what
   `destroy` and `invoke` do today, the properties it implies, and a binding contract proposal
   (concept); the probes and their output are in

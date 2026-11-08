@@ -1,0 +1,156 @@
+//go:build !wasip1
+
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+func ok200(int, cicFlowCall) cicFlowReply { return cicFlowReply{Status: 200, Body: `{}`} }
+
+// ---- The Relay's egress rule as READ in CIC-Relay at 55a899f (cmd/relay/cic_flow_manifest.go
+// and cic_flow_host_funcs.go). It is a transcription for this probe, not the Relay's code: the
+// Relay was not run. The manifest of this module declares one rule: host "*.oraclecloud.com",
+// methods GET/POST/PUT/DELETE/PATCH, no ports (so 443 only), no paths (so any path).
+func relayHostGlob(pattern, host string) bool {
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	host = strings.ToLower(host)
+	if suffix, ok := strings.CutPrefix(pattern, "*."); ok {
+		return strings.HasSuffix(host, "."+suffix) && len(host) > len(suffix)+1
+	}
+	return host == pattern
+}
+
+func relayPort(u *url.URL) int {
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err == nil {
+			return n
+		}
+	}
+	if u.Scheme == "http" {
+		return 80
+	}
+	return 443
+}
+
+// what the Relay's actuate does with the URL string it is handed: url.Parse, then the egress
+// check on Hostname(), the port and u.Path, then it sends the request to that URL.
+func relayView(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" {
+		return "RELAY-REFUSES(invalid url)"
+	}
+	allowed := relayHostGlob("*.oraclecloud.com", u.Hostname()) && relayPort(u) == 443
+	return fmt.Sprintf("hostname=%q port=%d path=%q rawquery=%q fragment=%q user=%q egress=%v",
+		u.Hostname(), relayPort(u), u.Path, u.RawQuery, u.Fragment, u.User.String(), allowed)
+}
+
+func d5run(t *testing.T, label string, b execBinding) {
+	t.Helper()
+	mock := &cicFlowMock{Reply: ok200}
+	restore := mock.wireHostSeam()
+	defer restore()
+	raw, _ := json.Marshal(observeRequest{Kind: "cic:network:vcn", Binding: b})
+	out, _ := Observe(nil, raw)
+	res := decodeResult(t, out)
+	if mock.actuateCount() == 0 {
+		fe := ""
+		if res.Error != nil {
+			fe = res.Error.FieldPath
+		}
+		fmt.Printf("D5 %-44s observe: nothing signed or sent (status=%s %s)\n", label, res.Status, fe)
+		return
+	}
+	sent := mock.Actuated[0].URL
+	canon, _, _ := ociCanonical("GET", b.Host, opPath(b, "/vcns/{vcnId}"), "D", nil)
+	lines := strings.Split(canon, "\n")
+	fmt.Printf("D5 %-44s sent=%q signed[%s | %s]\n      relay-sees: %s\n", label, sent, lines[0], lines[1], relayView(sent))
+}
+
+func TestZZD5Host(t *testing.T) {
+	good := execBinding{Host: "iaas.eu-frankfurt-1.oraclecloud.com", BasePath: "/20160918", KeyID: "t/u/f", ResourceID: "ocid1.vcn.oc1..approved"}
+	for _, h := range []string{
+		"iaas.eu-frankfurt-1.oraclecloud.com",
+		"iaas.eu-frankfurt-1.oraclecloud.com:8443",
+		"iaas.eu-frankfurt-1.oraclecloud.com@evil.example.com",
+		"evil.example.com#.oraclecloud.com",
+		"evil.example.com?x=.oraclecloud.com",
+		"evil.example.com/x.oraclecloud.com",
+		"evil.example.com" + "\x5c" + ".oraclecloud.com",
+		"IAAS.EU-FRANKFURT-1.ORACLECLOUD.COM",
+		"iaas.eu-frankfurt-1.oraclecloud.com.",
+		"anything.oraclecloud.com",
+		"objectstorage.us-ashburn-1.oraclecloud.com",
+		"evil-oraclecloud.com",
+		"http://iaas.eu-frankfurt-1.oraclecloud.com",
+		"iaas.eu-frankfurt-1.oraclecloud.com x",
+		"[::1]",
+	} {
+		b := good
+		b.Host = h
+		d5run(t, "host="+h, b)
+	}
+}
+
+func TestZZD5BasePath(t *testing.T) {
+	good := execBinding{Host: "iaas.eu-frankfurt-1.oraclecloud.com", BasePath: "/20160918", KeyID: "t/u/f", ResourceID: "ocid1.vcn.oc1..approved"}
+	for _, p := range []string{
+		"/20160918",
+		"",
+		"20160918",
+		"/20160918/",
+		"/20160918/../other",
+		"//evil.example.com",
+		"/x?inject=1",
+		"/x#frag",
+		"/%2e%2e/other",
+		"/20160918 x",
+		"/20160918\nX: y",
+		"/20990101",
+		"/identity/20160918",
+	} {
+		b := good
+		b.BasePath = p
+		d5run(t, "base_path="+strings.ReplaceAll(p, "\n", "\\n"), b)
+	}
+}
+
+// The same binding through every entry point that builds a path: the URL is the same string.
+func TestZZD5SamePathEverywhere(t *testing.T) {
+	b := execBinding{Host: "iaas.eu-frankfurt-1.oraclecloud.com", BasePath: "/x/../y?q=1", KeyID: "t/u/f", ResourceID: "ocid1.vcn.oc1..approved", Revision: "e"}
+	urls := map[string]string{}
+	run := func(name string, fn func() ([]byte, error)) {
+		mock := &cicFlowMock{Reply: ok200}
+		restore := mock.wireHostSeam()
+		fn()
+		restore()
+		if mock.actuateCount() > 0 {
+			urls[name] = mock.Actuated[0].URL
+		} else {
+			urls[name] = "(nothing sent)"
+		}
+	}
+	run("observe", func() ([]byte, error) { r, _ := json.Marshal(observeRequest{Kind: "cic:network:vcn", Binding: b}); return Observe(nil, r) })
+	run("destroy", func() ([]byte, error) { r, _ := json.Marshal(destroyRequest{Kind: "cic:network:vcn", Binding: b}); return Destroy(nil, r) })
+	run("invoke", func() ([]byte, error) {
+		r, _ := json.Marshal(invokeRequest{Kind: "cic:network:vcn", Operation: "ChangeVcnCompartment", Binding: b})
+		return Invoke(nil, r)
+	})
+	run("execute", func() ([]byte, error) {
+		req := m4aForOp(t, "cic:network:vcn", providerOperation{Operation: "UpdateVcn", Method: "PUT", Path: "/vcns/{vcnId}"}, `{"displayName":"x"}`, b)
+		r, _ := json.Marshal(req)
+		return Execute(nil, r)
+	})
+	run("poll(work_request_id)", func() ([]byte, error) {
+		r, _ := json.Marshal(pollRequest{Binding: b, WorkRequestID: "ocid1.wr..a"})
+		return Poll(nil, r)
+	})
+	for _, k := range []string{"observe", "destroy", "invoke", "execute", "poll(work_request_id)"} {
+		fmt.Printf("D5 same-path: %-22s %s\n", k, urls[k])
+	}
+}

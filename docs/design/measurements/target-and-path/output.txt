@@ -1,0 +1,65 @@
+D5 host=iaas.eu-frankfurt-1.oraclecloud.com     sent="https://iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com]
+      relay-sees: hostname="iaas.eu-frankfurt-1.oraclecloud.com" port=443 path="/20160918/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=true
+D5 host=iaas.eu-frankfurt-1.oraclecloud.com:8443 sent="https://iaas.eu-frankfurt-1.oraclecloud.com:8443/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com:8443]
+      relay-sees: hostname="iaas.eu-frankfurt-1.oraclecloud.com" port=8443 path="/20160918/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=false
+D5 host=iaas.eu-frankfurt-1.oraclecloud.com@evil.example.com sent="https://iaas.eu-frankfurt-1.oraclecloud.com@evil.example.com/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com@evil.example.com]
+      relay-sees: hostname="evil.example.com" port=443 path="/20160918/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="iaas.eu-frankfurt-1.oraclecloud.com" egress=false
+D5 host=evil.example.com#.oraclecloud.com       sent="https://evil.example.com#.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: evil.example.com#.oraclecloud.com]
+      relay-sees: hostname="evil.example.com" port=443 path="" rawquery="" fragment=".oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved" user="" egress=false
+D5 host=evil.example.com?x=.oraclecloud.com     sent="https://evil.example.com?x=.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: evil.example.com?x=.oraclecloud.com]
+      relay-sees: hostname="evil.example.com" port=443 path="" rawquery="x=.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved" fragment="" user="" egress=false
+D5 host=evil.example.com/x.oraclecloud.com      sent="https://evil.example.com/x.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: evil.example.com/x.oraclecloud.com]
+      relay-sees: hostname="evil.example.com" port=443 path="/x.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=false
+D5 host=evil.example.com\.oraclecloud.com       sent="https://evil.example.com\\.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: evil.example.com\.oraclecloud.com]
+      relay-sees: RELAY-REFUSES(invalid url)
+D5 host=IAAS.EU-FRANKFURT-1.ORACLECLOUD.COM     sent="https://IAAS.EU-FRANKFURT-1.ORACLECLOUD.COM/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: IAAS.EU-FRANKFURT-1.ORACLECLOUD.COM]
+      relay-sees: hostname="IAAS.EU-FRANKFURT-1.ORACLECLOUD.COM" port=443 path="/20160918/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=true
+D5 host=iaas.eu-frankfurt-1.oraclecloud.com.    sent="https://iaas.eu-frankfurt-1.oraclecloud.com./20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com.]
+      relay-sees: hostname="iaas.eu-frankfurt-1.oraclecloud.com." port=443 path="/20160918/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=false
+D5 host=anything.oraclecloud.com                sent="https://anything.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: anything.oraclecloud.com]
+      relay-sees: hostname="anything.oraclecloud.com" port=443 path="/20160918/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=true
+D5 host=objectstorage.us-ashburn-1.oraclecloud.com sent="https://objectstorage.us-ashburn-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: objectstorage.us-ashburn-1.oraclecloud.com]
+      relay-sees: hostname="objectstorage.us-ashburn-1.oraclecloud.com" port=443 path="/20160918/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=true
+D5 host=evil-oraclecloud.com                    sent="https://evil-oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: evil-oraclecloud.com]
+      relay-sees: hostname="evil-oraclecloud.com" port=443 path="/20160918/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=false
+D5 host=http://iaas.eu-frankfurt-1.oraclecloud.com sent="https://http://iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: http://iaas.eu-frankfurt-1.oraclecloud.com]
+      relay-sees: hostname="http" port=443 path="//iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=false
+D5 host=iaas.eu-frankfurt-1.oraclecloud.com x   sent="https://iaas.eu-frankfurt-1.oraclecloud.com x/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com x]
+      relay-sees: RELAY-REFUSES(invalid url)
+D5 host=[::1]                                   sent="https://[::1]/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: [::1]]
+      relay-sees: hostname="::1" port=443 path="/20160918/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=false
+--- PASS: TestZZD5Host (0.00s)
+D5 base_path=/20160918                          sent="https://iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com]
+      relay-sees: hostname="iaas.eu-frankfurt-1.oraclecloud.com" port=443 path="/20160918/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=true
+D5 base_path=                                   sent="https://iaas.eu-frankfurt-1.oraclecloud.com/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com]
+      relay-sees: hostname="iaas.eu-frankfurt-1.oraclecloud.com" port=443 path="/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=true
+D5 base_path=20160918                           sent="https://iaas.eu-frankfurt-1.oraclecloud.com20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get 20160918/vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com]
+      relay-sees: hostname="iaas.eu-frankfurt-1.oraclecloud.com20160918" port=443 path="/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=false
+D5 base_path=/20160918/                         sent="https://iaas.eu-frankfurt-1.oraclecloud.com/20160918//vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918//vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com]
+      relay-sees: hostname="iaas.eu-frankfurt-1.oraclecloud.com" port=443 path="/20160918//vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=true
+D5 base_path=/20160918/../other                 sent="https://iaas.eu-frankfurt-1.oraclecloud.com/20160918/../other/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918/../other/vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com]
+      relay-sees: hostname="iaas.eu-frankfurt-1.oraclecloud.com" port=443 path="/20160918/../other/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=true
+D5 base_path=//evil.example.com                 sent="https://iaas.eu-frankfurt-1.oraclecloud.com//evil.example.com/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get //evil.example.com/vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com]
+      relay-sees: hostname="iaas.eu-frankfurt-1.oraclecloud.com" port=443 path="//evil.example.com/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=true
+D5 base_path=/x?inject=1                        sent="https://iaas.eu-frankfurt-1.oraclecloud.com/x?inject=1/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /x?inject=1/vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com]
+      relay-sees: hostname="iaas.eu-frankfurt-1.oraclecloud.com" port=443 path="/x" rawquery="inject=1/vcns/ocid1.vcn.oc1..approved" fragment="" user="" egress=true
+D5 base_path=/x#frag                            sent="https://iaas.eu-frankfurt-1.oraclecloud.com/x#frag/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /x#frag/vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com]
+      relay-sees: hostname="iaas.eu-frankfurt-1.oraclecloud.com" port=443 path="/x" rawquery="" fragment="frag/vcns/ocid1.vcn.oc1..approved" user="" egress=true
+D5 base_path=/%2e%2e/other                      sent="https://iaas.eu-frankfurt-1.oraclecloud.com/%2e%2e/other/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /%2e%2e/other/vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com]
+      relay-sees: hostname="iaas.eu-frankfurt-1.oraclecloud.com" port=443 path="/../other/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=true
+D5 base_path=/20160918 x                        sent="https://iaas.eu-frankfurt-1.oraclecloud.com/20160918 x/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918 x/vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com]
+      relay-sees: hostname="iaas.eu-frankfurt-1.oraclecloud.com" port=443 path="/20160918 x/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=true
+D5 base_path=/20160918\nX: y                    sent="https://iaas.eu-frankfurt-1.oraclecloud.com/20160918\nX: y/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20160918 | X: y/vcns/ocid1.vcn.oc1..approved]
+      relay-sees: RELAY-REFUSES(invalid url)
+D5 base_path=/20990101                          sent="https://iaas.eu-frankfurt-1.oraclecloud.com/20990101/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /20990101/vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com]
+      relay-sees: hostname="iaas.eu-frankfurt-1.oraclecloud.com" port=443 path="/20990101/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=true
+D5 base_path=/identity/20160918                 sent="https://iaas.eu-frankfurt-1.oraclecloud.com/identity/20160918/vcns/ocid1.vcn.oc1..approved" signed[(request-target): get /identity/20160918/vcns/ocid1.vcn.oc1..approved | host: iaas.eu-frankfurt-1.oraclecloud.com]
+      relay-sees: hostname="iaas.eu-frankfurt-1.oraclecloud.com" port=443 path="/identity/20160918/vcns/ocid1.vcn.oc1..approved" rawquery="" fragment="" user="" egress=true
+--- PASS: TestZZD5BasePath (0.00s)
+D5 same-path: observe                https://iaas.eu-frankfurt-1.oraclecloud.com/x/../y?q=1/vcns/ocid1.vcn.oc1..approved
+D5 same-path: destroy                https://iaas.eu-frankfurt-1.oraclecloud.com/x/../y?q=1/vcns/ocid1.vcn.oc1..approved
+D5 same-path: invoke                 https://iaas.eu-frankfurt-1.oraclecloud.com/x/../y?q=1/vcns/ocid1.vcn.oc1..approved/actions/changeCompartment
+D5 same-path: execute                https://iaas.eu-frankfurt-1.oraclecloud.com/x/../y?q=1/vcns/ocid1.vcn.oc1..approved
+D5 same-path: poll(work_request_id)  (nothing sent)
+--- PASS: TestZZD5SamePathEverywhere (0.00s)
+ok  	github.com/CentralInfraCore/wasm-module-template/module	0.005s
