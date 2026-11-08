@@ -177,6 +177,114 @@ third-party module author has no way to hit this problem today either.
 
 ---
 
+## M4b - approval, authority and execution state (R6 to R10)
+
+The module can now prove that an `execute` request is internally consistent and echo its
+`execution_digest` (M4a, [specs/plan-digest.md](specs/plan-digest.md)). It cannot prove that
+anyone allowed it, that it has not run before, or what happened to it. Those belong to the
+relay. The behaviour we need, and the tests that will show it, are in
+[specs/approval-and-execution-state.md](specs/approval-and-execution-state.md); the items
+below are the asks. All are `needed` and **not yet raised** in `CIC-Relay`. Relay facts are
+from commit `55a899f`, read, not executed; what was not read is marked NOT VERIFIED. As
+above, these state needs, not an implementation: the relay team owns the design.
+
+Each item: current behaviour, required behaviour, negative test, acceptance condition.
+
+## R6 - An authenticated, run-bound execution context for the guest, and for its host calls · needed
+
+**Current behaviour (read).** The cabinet gives a guest an `authContextJson` that is just
+the component id (`core/cabinet/service.go:228`) and dispatches only `init`, `process`,
+`get` and `notify` (`:234-240`, `core/cabinet/cicwasm.go`). The `cic-flow` host functions
+get `cicFlowDeps{sign, doer, egress}` (`cmd/relay/cic_flow_host_funcs.go:51-55`): no run, no
+principal, no plan. `sign` and `actuate` each accept a `trace_id` in the request and never
+use it (`:112-116`, `:141-148`); it is chosen by the guest, so it cannot be an authority.
+
+**Required.** Each `sign`/`actuate` call is attributable, by the relay's own authenticated
+context and not by anything the guest supplies, to one authenticated principal, one run and
+one execution (an `execution_digest`). A guest cannot name another execution's context.
+
+**Negative test.** A guest that sends a forged `trace_id`, or none, is attributed to the
+real run; a call made outside any run is refused.
+
+**Acceptance.** Every provider request in the trace names the authenticated run and the
+execution it belongs to.
+
+## R7 - Approval verification before the first provider call · needed
+
+**Current behaviour (read).** No approval concept sits on the module's execution path. The
+relay has an intent-authorization seam, `core/nexus/ois` (`Intent{Actor, Action, TargetRef,
+Reason}`, `Policy.Authorize`), but its only non-test importers are `core/nexus/recorder`
+(rollback) and `tools/statechain-demo`; neither `cmd/relay` nor `core/cabinet` uses it. The
+model exists; the link to the module's execution breaks there.
+
+**Required.** Before the first `sign` of an execution the relay verifies an approval that
+names the execution's `execution_digest`: authentic, not expired, not revoked, in scope for
+the kind and operation, issued by a policy decision that is identified. The module's digest
+is compared; the module is not asked whether the approval is genuine.
+
+**Negative test.** No approval; an approval for another `execution_digest`; an expired or
+revoked one: no provider request in each case.
+
+**Acceptance.** The only way a `sign` or `actuate` reaches the provider is through a verified
+approval for exactly that execution.
+
+## R8 - Atomic, durable single use, and an UNKNOWN state · needed
+
+**Current behaviour (read).** Nothing in the cic-flow path records that an approval, or a
+request, was used; `actuate` turns any transport error into one error text
+(`cmd/relay/cic_flow_host_funcs.go:141-190`), so a request that never left and one whose
+answer was lost look the same to the guest. NOT VERIFIED: whether the relay has a durable
+store it could use, and its guarantees.
+
+**Required.** The state machine of the spec: an atomic, durable reservation before the
+first provider request; a write-ahead record before each provider request; a release only
+when no request was attempted; UNKNOWN when a request was attempted and no answer was
+recorded, never resent automatically and left only through recorded reconciliation by
+evidence (for an asynchronous operation including the correlation of the Work Request with
+the execution). Concurrent requests for one approval: at most one executes. A restart
+finds the state as left.
+
+**Negative tests.** Two or more concurrent uses; a lost answer; a restart after the
+reservation; a restart after the write-ahead; a module that refuses with zero sends.
+
+**Acceptance.** For one approval the provider sees the requests of at most one execution,
+whatever the concurrency, restarts or lost answers; an execution of unknown outcome is
+visible as such.
+
+## R9 - Decision context and the five kinds of evidence in the ProofTrace · needed
+
+**Current behaviour (read).** The cic-flow host functions at `55a899f` use no audit or
+ProofTrace sink (no use of one in `cmd/relay/cic_flow_*.go`, outside tests). R4 above
+covers the chained audit entry on the FFI path.
+
+**Required.** An execution's trace records, as separate kinds of entry, what was requested,
+what was authorized, what was sent to the provider, what the provider confirmed, and what
+remains uncertain; and carries: the authenticated run id, the policy decision id, the digest
+of the verified module artifact, the reservation transition, and the three digests. A signed
+observation is its own kind and is never recorded as the proven physical state.
+
+**Negative test.** An UNKNOWN execution shows an `uncertain` entry and no `confirmed` one.
+
+**Acceptance.** From the trace alone one can tell the five apart for any execution.
+
+## R10 - `destroy` and `invoke` under the same model · needed
+
+**Current behaviour (read).** The module has `destroy` and `invoke` as entry points of its
+own, with no plan and no digest. NOT VERIFIED: whether the relay sees the operation name
+before the guest runs.
+
+**Required.** An approval is required for them too, naming a digest of the request; the
+relay must not route them around R7 to R9. (The module still has to produce that digest:
+see "Entry points" in the spec.)
+
+**Negative test.** A direct `destroy` or `invoke` with no approval: refused, no provider
+request.
+
+**Acceptance.** No operation that can change the provider's state is reachable without an
+approval.
+
+---
+
 ## How to raise these
 
 1. Keep this file current as needs are discovered or resolved.
