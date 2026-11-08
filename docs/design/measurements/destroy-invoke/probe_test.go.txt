@@ -1,0 +1,154 @@
+//go:build !wasip1
+
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+var (
+	reKey   = regexp.MustCompile(`keyId=\\?"([^"\\]*)`)
+	reMatch = regexp.MustCompile(`if-match\\?":\\?"([^"\\]*)`)
+)
+
+// run executes fn against a fresh mock and prints one line: what the module was given
+// and what it signed and sent.
+func probe(t *testing.T, label string, reply func(int, cicFlowCall) cicFlowReply, fn func() ([]byte, error)) {
+	t.Helper()
+	mock := &cicFlowMock{Reply: reply}
+	restore := mock.wireHostSeam()
+	defer restore()
+	out, _ := fn()
+	res := decodeResult(t, out)
+	line := fmt.Sprintf("DI %-62s status=%-5s sign=%d actuate=%d", label, res.Status, mock.signCount(), mock.actuateCount())
+	if res.Error != nil {
+		line += " err=" + res.Error.FieldPath
+	}
+	for i, c := range mock.Actuated {
+		if i >= 2 {
+			line += " ..."
+			break
+		}
+		k := ""
+		if m := reKey.FindStringSubmatch(c.Raw); len(m) > 1 {
+			k = m[1]
+		}
+		im := ""
+		if m := reMatch.FindStringSubmatch(c.Raw); len(m) > 1 {
+			im = m[1]
+		}
+		body := string(c.Body)
+		if len(body) > 60 {
+			body = body[:57] + "..."
+		}
+		line += fmt.Sprintf(" | %s %s body=%q key=%s if-match=%s", c.Method, strings.TrimPrefix(c.URL, "https://"), body, k, im)
+	}
+	fmt.Println(line)
+}
+
+func ok200(int, cicFlowCall) cicFlowReply { return cicFlowReply{Status: 200, Body: `{}`} }
+
+func TestZZDestroy(t *testing.T) {
+	b := execBinding{Host: "iaas.eu-frankfurt-1.oraclecloud.com", BasePath: "/20160918", KeyID: "t/u/f", ResourceID: "ocid1.vcn.oc1..approved", Revision: "etag-1"}
+	call := func(bb execBinding, kind string) func() ([]byte, error) {
+		return func() ([]byte, error) {
+			raw, _ := json.Marshal(destroyRequest{Kind: kind, Binding: bb})
+			return Destroy(nil, raw)
+		}
+	}
+	probe(t, "destroy: baseline", ok200, call(b, "cic:network:vcn"))
+	for name, f := range map[string]func(*execBinding){
+		"resource_id": func(x *execBinding) { x.ResourceID = "ocid1.vcn.oc1..OTHER" },
+		"host":        func(x *execBinding) { x.Host = "iaas.us-ashburn-1.oraclecloud.com" },
+		"base_path":   func(x *execBinding) { x.BasePath = "/20990101" },
+		"key_id":      func(x *execBinding) { x.KeyID = "other/tenancy/key" },
+		"revision":    func(x *execBinding) { x.Revision = "etag-STALE" },
+	} {
+		bb := b
+		f(&bb)
+		probe(t, "destroy: only binding."+name+" differs", ok200, call(bb, "cic:network:vcn"))
+	}
+	probe(t, "destroy: instance kind (TerminateInstance)", ok200, call(execBinding{Host: b.Host, BasePath: b.BasePath, KeyID: b.KeyID, ResourceID: "ocid1.instance.oc1..i"}, "cic:compute:instance"))
+	// replay: three calls on ONE mock, the provider answers 404 after the first
+	mock := &cicFlowMock{Reply: func(n int, c cicFlowCall) cicFlowReply {
+		if n <= 1 {
+			return cicFlowReply{Status: 204}
+		}
+		return cicFlowReply{Status: 404, Body: `{"code":"NotAuthorizedOrNotFound","message":"gone"}`}
+	}}
+	restore := mock.wireHostSeam()
+	var sts []string
+	for i := 0; i < 3; i++ {
+		raw, _ := json.Marshal(destroyRequest{Kind: "cic:network:vcn", Binding: b})
+		out, _ := Destroy(nil, raw)
+		r := decodeResult(t, out)
+		s := r.Status
+		if r.Error != nil {
+			s += "/" + r.Error.Class
+		}
+		sts = append(sts, s)
+	}
+	restore()
+	fmt.Printf("DI destroy: the same request 3x, provider 204 then 404 -> results=%v sign=%d actuate=%d\n", sts, mock.signCount(), mock.actuateCount())
+}
+
+func TestZZInvoke(t *testing.T) {
+	b := execBinding{Host: "iaas.eu-frankfurt-1.oraclecloud.com", BasePath: "/20160918", KeyID: "t/u/f", ResourceID: "ocid1.vcn.oc1..approved", Revision: "etag-1"}
+	inv := func(bb execBinding, op, cfg string) func() ([]byte, error) {
+		return func() ([]byte, error) {
+			req := invokeRequest{Kind: "cic:network:vcn", Operation: op, Binding: bb}
+			if cfg != "" {
+				req.Config = schemaPayload{Data: json.RawMessage(cfg)}
+			}
+			raw, _ := json.Marshal(req)
+			return Invoke(nil, raw)
+		}
+	}
+	act := `{"compartmentId":"ocid1.compartment..c"}`
+	probe(t, "invoke: baseline ChangeVcnCompartment", ok200, inv(b, "ChangeVcnCompartment", act))
+	for name, f := range map[string]func(*execBinding){
+		"resource_id": func(x *execBinding) { x.ResourceID = "ocid1.vcn.oc1..OTHER" },
+		"host":        func(x *execBinding) { x.Host = "iaas.us-ashburn-1.oraclecloud.com" },
+		"base_path":   func(x *execBinding) { x.BasePath = "/20990101" },
+		"key_id":      func(x *execBinding) { x.KeyID = "other/tenancy/key" },
+		"revision":    func(x *execBinding) { x.Revision = "etag-STALE" },
+	} {
+		bb := b
+		f(&bb)
+		probe(t, "invoke: only binding."+name+" differs", ok200, inv(bb, "ChangeVcnCompartment", act))
+	}
+	// the operation: any registry operation, whatever its role
+	for _, op := range []string{"DeleteVcn", "UpdateVcn", "CreateVcn", "GetVcn", "AddVcnCidr"} {
+		probe(t, "invoke: operation="+op+" (registry role "+resourceContracts()["cic:network:vcn"].operations[op].role+")", ok200, inv(b, op, act))
+	}
+	// body fidelity is measured on raw request text in zz_di_raw_test.go (a request built with
+	// json.Marshal would rewrite the body text and make that measure meaningless)
+	probe(t, "invoke: unknown field names like an Execute plan would filter", ok200, inv(b, "UpdateVcn", `{"displayName":"x","lifecycleState":"TERMINATED","id":"other"}`))
+	// replay
+	mock := &cicFlowMock{Reply: ok200}
+	restore := mock.wireHostSeam()
+	for i := 0; i < 5; i++ {
+		raw, _ := json.Marshal(invokeRequest{Kind: "cic:network:vcn", Operation: "ChangeVcnCompartment", Config: schemaPayload{Data: json.RawMessage(act)}, Binding: b})
+		Invoke(nil, raw)
+	}
+	restore()
+	fmt.Printf("DI invoke: the same request 5x -> sign=%d actuate=%d\n", mock.signCount(), mock.actuateCount())
+}
+
+// What Execute's renderBody makes of the same fields, for comparison with Invoke's raw body.
+func TestZZRenderBodyVsInvoke(t *testing.T) {
+	c := resourceContracts()["cic:network:vcn"]
+	cfg := map[string]json.RawMessage{
+		"compartmentId": json.RawMessage(`"ocid1.compartment..c"`),
+		"displayName":   json.RawMessage(`"X"`),
+		"lifecycleState": json.RawMessage(`"TERMINATED"`),
+		"evil":          json.RawMessage(`1`),
+	}
+	for _, op := range []string{"ChangeVcnCompartment", "UpdateVcn", "CreateVcn", "DeleteVcn", "GetVcn"} {
+		fmt.Printf("DI renderBody(%s, role %s) = %q\n", op, c.operations[op].role, string(renderBody(c, providerOperation{Operation: op}, cfg)))
+	}
+}

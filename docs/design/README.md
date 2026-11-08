@@ -31,6 +31,10 @@ namespace it opens. Written 2026-07-18 from the design session recorded in
   computed over.
 - [specs/plan-digest.md](specs/plan-digest.md) — `plan_digest`, `target_digest`,
   `execution_digest` and the gate `execute` applies before it signs anything.
+- [specs/destroy-invoke-binding.md](specs/destroy-invoke-binding.md) — a measurement of what
+  `destroy` and `invoke` do today, the properties it implies, and a binding contract proposal
+  (concept); the probes and their output are in
+  [measurements/destroy-invoke/](measurements/destroy-invoke/README.md).
 - [specs/approval-and-execution-state.md](specs/approval-and-execution-state.md) — M4b (concept):
   what an approval names, the execution state of one approval (atomic reservation, UNKNOWN),
   the ProofTrace evidence, and the acceptance tests the Relay side will be held to.

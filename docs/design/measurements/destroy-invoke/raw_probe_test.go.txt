@@ -1,0 +1,50 @@
+//go:build !wasip1
+
+package main
+
+import (
+	"fmt"
+	"testing"
+)
+
+// The request TEXT is written byte by byte (a backslash is "\x5c") so that no editor or
+// tool between this file and the module can rewrite an escape sequence on the way.
+const bs = "\x5c"
+
+func rawInvoke(op, dataText string) []byte {
+	cfg := ""
+	if dataText != "" {
+		cfg = `"config":{"schema_id":"s","schema_version":"v","schema_hash":"abc123","encoding":"canonical-json","data":` + dataText + `},`
+	}
+	return []byte(`{"kind":"cic:network:vcn","operation":"` + op + `",` + cfg +
+		`"binding":{"host":"iaas.eu-frankfurt-1.oraclecloud.com","base_path":"/20160918","key_id":"t/u/f","resource_id":"ocid1.vcn.oc1..approved","revision":"etag-1"}}`)
+}
+
+func TestZZInvokeRawBodies(t *testing.T) {
+	cases := []struct{ name, data string }{
+		{"whitespace and key order are kept", ` { "z" : 1 , "compartmentId" : "ocid1.compartment..c" } `},
+		{"a duplicate key is kept", `{"compartmentId":"ocid1.compartment..a","compartmentId":"ocid1.compartment..b"}`},
+		{"a u-escape is kept as written", `{"s":"` + bs + `u00e9` + bs + `u003c"}`},
+		{"2^53+1 and 1.0 are kept as written", `{"n":9007199254740993,"m":1.0}`},
+		{"data is JSON null", `null`},
+		{"data is an array", `[1,2,3]`},
+		{"data is a string", `"just a string"`},
+		{"extra fields besides the action's", `{"compartmentId":"ocid1.compartment..c","displayName":"EVIL","lifecycleState":"TERMINATED"}`},
+		{"config absent entirely", ``},
+		{"data is not JSON (the whole request is not JSON)", `{bad`},
+	}
+	for _, c := range cases {
+		c := c
+		mock := &cicFlowMock{Reply: ok200}
+		restore := mock.wireHostSeam()
+		out, _ := Invoke(nil, rawInvoke("ChangeVcnCompartment", c.data))
+		restore()
+		res := decodeResult(t, out)
+		line := fmt.Sprintf("RAW %-52s status=%-5s sign=%d actuate=%d", c.name, res.Status, mock.signCount(), mock.actuateCount())
+		if mock.actuateCount() > 0 {
+			sent := string(mock.Actuated[0].Body)
+			line += fmt.Sprintf(" sent=%q identical_to_input=%v", sent, sent == c.data)
+		}
+		fmt.Println(line)
+	}
+}

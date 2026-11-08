@@ -1,0 +1,41 @@
+DI destroy: baseline                                              status=ok    sign=1 actuate=1 | DELETE iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved body="" key=t/u/f if-match=etag-1
+DI destroy: only binding.resource_id differs                      status=ok    sign=1 actuate=1 | DELETE iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..OTHER body="" key=t/u/f if-match=etag-1
+DI destroy: only binding.host differs                             status=ok    sign=1 actuate=1 | DELETE iaas.us-ashburn-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved body="" key=t/u/f if-match=etag-1
+DI destroy: only binding.base_path differs                        status=ok    sign=1 actuate=1 | DELETE iaas.eu-frankfurt-1.oraclecloud.com/20990101/vcns/ocid1.vcn.oc1..approved body="" key=t/u/f if-match=etag-1
+DI destroy: only binding.key_id differs                           status=ok    sign=1 actuate=1 | DELETE iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved body="" key=other/tenancy/key if-match=etag-1
+DI destroy: only binding.revision differs                         status=ok    sign=1 actuate=1 | DELETE iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved body="" key=t/u/f if-match=etag-STALE
+DI destroy: instance kind (TerminateInstance)                     status=ok    sign=1 actuate=1 | DELETE iaas.eu-frankfurt-1.oraclecloud.com/20160918/instances/ocid1.instance.oc1..i body="" key=t/u/f if-match=
+DI destroy: the same request 3x, provider 204 then 404 -> results=[ok error/not-found error/not-found] sign=3 actuate=3
+--- PASS: TestZZDestroy (0.00s)
+DI invoke: baseline ChangeVcnCompartment                          status=ok    sign=1 actuate=1 | POST iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved/actions/changeCompartment body="{\"compartmentId\":\"ocid1.compartment..c\"}" key=t/u/f if-match=etag-1
+DI invoke: only binding.resource_id differs                       status=ok    sign=1 actuate=1 | POST iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..OTHER/actions/changeCompartment body="{\"compartmentId\":\"ocid1.compartment..c\"}" key=t/u/f if-match=etag-1
+DI invoke: only binding.host differs                              status=ok    sign=1 actuate=1 | POST iaas.us-ashburn-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved/actions/changeCompartment body="{\"compartmentId\":\"ocid1.compartment..c\"}" key=t/u/f if-match=etag-1
+DI invoke: only binding.base_path differs                         status=ok    sign=1 actuate=1 | POST iaas.eu-frankfurt-1.oraclecloud.com/20990101/vcns/ocid1.vcn.oc1..approved/actions/changeCompartment body="{\"compartmentId\":\"ocid1.compartment..c\"}" key=t/u/f if-match=etag-1
+DI invoke: only binding.key_id differs                            status=ok    sign=1 actuate=1 | POST iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved/actions/changeCompartment body="{\"compartmentId\":\"ocid1.compartment..c\"}" key=other/tenancy/key if-match=etag-1
+DI invoke: only binding.revision differs                          status=ok    sign=1 actuate=1 | POST iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved/actions/changeCompartment body="{\"compartmentId\":\"ocid1.compartment..c\"}" key=t/u/f if-match=etag-STALE
+DI invoke: operation=DeleteVcn (registry role delete)             status=ok    sign=1 actuate=1 | DELETE iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved body="{\"compartmentId\":\"ocid1.compartment..c\"}" key=t/u/f if-match=etag-1
+DI invoke: operation=UpdateVcn (registry role update)             status=ok    sign=1 actuate=1 | PUT iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved body="{\"compartmentId\":\"ocid1.compartment..c\"}" key=t/u/f if-match=etag-1
+DI invoke: operation=CreateVcn (registry role create)             status=ok    sign=1 actuate=1 | POST iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns body="{\"compartmentId\":\"ocid1.compartment..c\"}" key=t/u/f if-match=etag-1
+DI invoke: operation=GetVcn (registry role read)                  status=ok    sign=1 actuate=1 | GET iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved body="{\"compartmentId\":\"ocid1.compartment..c\"}" key=t/u/f if-match=etag-1
+DI invoke: operation=AddVcnCidr (registry role action)            status=ok    sign=1 actuate=1 | POST iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved/actions/addCidr body="{\"compartmentId\":\"ocid1.compartment..c\"}" key=t/u/f if-match=etag-1
+DI invoke: unknown field names like an Execute plan would filter  status=ok    sign=1 actuate=1 | PUT iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns/ocid1.vcn.oc1..approved body="{\"displayName\":\"x\",\"lifecycleState\":\"TERMINATED\",\"id\":\"ot..." key=t/u/f if-match=etag-1
+DI invoke: the same request 5x -> sign=5 actuate=5
+--- PASS: TestZZInvoke (0.00s)
+DI renderBody(ChangeVcnCompartment, role action) = "{\"compartmentId\":\"ocid1.compartment..c\"}"
+DI renderBody(UpdateVcn, role update) = "{\"displayName\":\"X\"}"
+DI renderBody(CreateVcn, role create) = "{\"compartmentId\":\"ocid1.compartment..c\",\"displayName\":\"X\"}"
+DI renderBody(DeleteVcn, role delete) = ""
+DI renderBody(GetVcn, role read) = "{}"
+--- PASS: TestZZRenderBodyVsInvoke (0.00s)
+RAW whitespace and key order are kept                    status=ok    sign=1 actuate=1 sent="{ \"z\" : 1 , \"compartmentId\" : \"ocid1.compartment..c\" }" identical_to_input=false
+RAW a duplicate key is kept                              status=ok    sign=1 actuate=1 sent="{\"compartmentId\":\"ocid1.compartment..a\",\"compartmentId\":\"ocid1.compartment..b\"}" identical_to_input=true
+RAW a u-escape is kept as written                        status=ok    sign=1 actuate=1 sent="{\"s\":\"\\u00e9\\u003c\"}" identical_to_input=true
+RAW 2^53+1 and 1.0 are kept as written                   status=ok    sign=1 actuate=1 sent="{\"n\":9007199254740993,\"m\":1.0}" identical_to_input=true
+RAW data is JSON null                                    status=ok    sign=1 actuate=1 sent="null" identical_to_input=true
+RAW data is an array                                     status=ok    sign=1 actuate=1 sent="[1,2,3]" identical_to_input=true
+RAW data is a string                                     status=ok    sign=1 actuate=1 sent="\"just a string\"" identical_to_input=true
+RAW extra fields besides the action's                    status=ok    sign=1 actuate=1 sent="{\"compartmentId\":\"ocid1.compartment..c\",\"displayName\":\"EVIL\",\"lifecycleState\":\"TERMINATED\"}" identical_to_input=true
+RAW config absent entirely                               status=ok    sign=1 actuate=1 sent="{}" identical_to_input=false
+RAW data is not JSON (the whole request is not JSON)     status=error sign=0 actuate=0
+--- PASS: TestZZInvokeRawBodies (0.00s)
+ok  	github.com/CentralInfraCore/wasm-module-template/module	0.005s
