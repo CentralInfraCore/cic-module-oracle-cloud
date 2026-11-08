@@ -195,17 +195,20 @@ scope note at its top) and `docs/RECEIPT-SCHEMA.md` (`cic-primitive-engine` at `
   describes is meant to be provider-independent.
 - **The library cannot derive it**, by construction (no execution context).
 - **The named seam for facts from outside is `Resolve` from a supplied snapshot (P5, design only).**
-  A realization context would be such a snapshot, supplied by the layer that realizes the object.
-  That seam does not exist in code.
+  A realization context could be proposed as such a snapshot, supplied by the layer that realizes the
+  object. That is a proposal: nothing in the P5 document says that a realization context is an
+  accepted kind of snapshot, and the seam does not exist in code.
 - **The audit form has a gap.** A `derived_values` entry names its `inputs` as paths of the object. A
   value derived from a context that is not part of the object has no such path, and the receipt
   contract is closed, so it cannot name that input today.
 - **Two ways to close it** (the owner's choice; neither is implemented): (i) the context is
-  materialized **into** the object, so `derived_values` can name it as paths, which makes the
-  object environment-specific and changes the closed receipt contract in the engine repository;
-  (ii) the context stays **outside** the object and is bound at the execution layer by the realization
-  digest of section 4, with the receipt unchanged and the object provider-independent. Section 4
-  was written for (ii).
+  materialized **into** the object. That requires reconsidering the object's schema and the object
+  boundary (the object would become environment-specific). Whether the existing receipt contract can
+  represent the derivation of such values without an extension is **not yet verified**: if the context
+  is part of the object's schema, a `derived_values[].inputs` entry could in principle name its
+  paths, so a new receipt field is not shown to be necessary. (ii) the context stays **outside** the
+  object and is bound at the execution layer by the realization digest of section 4, with the receipt
+  contract not involved and the object provider-independent. Section 4 was written for (ii).
 - **A word that means two things.** The engine's "environment" is the processing layer that prepares
   the object (Parse, Normalize, Resolve, Validate). The realization "environment" of section 4 is a
   provider account, region and realm. They are different things; a document that says "the
@@ -215,7 +218,10 @@ scope note at its top) and `docs/RECEIPT-SCHEMA.md` (`cic-primitive-engine` at `
 ### 6.3 Decisions this adds
 
 - **D5-6.** The realization context inside the object (i) or outside it, bound at the execution layer
-  (ii). Section 4 assumes (ii); (i) needs an engine contract change.
+  (ii). Section 4 assumes (ii). (i) means reconsidering the schema and the object boundary; whether it
+  also needs a receipt extension is not verified. This is not a choice for this repository alone: it
+  touches the object boundary and has to be decided together with the contracts of the Forms library
+  and the engine (and the Relay's).
 - **D5-7.** Names: a distinct word for the realization environment, so it is not confused with the
   engine's "environment".
 
