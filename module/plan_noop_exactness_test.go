@@ -53,7 +53,7 @@ func TestPlanStillCallsEquivalentJSONANoop(t *testing.T) {
 		{"number spelling", `{"shapeConfig":{"ocpus":1},"displayName":"x"}`, `{"shapeConfig":{"ocpus":1.0},"displayName":"x"}`},
 		{"exponent spelling", `{"shapeConfig":{"ocpus":100},"displayName":"x"}`, `{"shapeConfig":{"ocpus":1e2},"displayName":"x"}`},
 		{"key order and whitespace", `{"shapeConfig":{"ocpus":2,"memoryInGBs":16},"displayName":"x"}`, ` { "displayName":"x", "shapeConfig":{ "memoryInGBs":16, "ocpus":2 } } `},
-		{"escaped text", `{"displayName":"é"}`, "{\"displayName\":\"\xc3\xa9\"}"},
+		{"escaped text", `{"displayName":"` + backslash + `u00e9"}`, "{\"displayName\":\"\xc3\xa9\"}"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			res, plan := planInstance(t, c.desired, c.observed)

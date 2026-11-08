@@ -24,7 +24,7 @@ The input is one strict JSON text (RFC 8259). The output is deterministic:
 
 - **Whitespace** is dropped (only space, tab, CR and LF are whitespace on input).
 - **Objects**: members sorted by the **decoded key's UTF-8 bytes**; the keys are
-  compared after escapes are decoded (`"a"` is `"a"`). A **repeated key is an
+  compared after escapes are decoded (`"\u0061"` is `"a"`). A **repeated key is an
   error**, never merged.
 - **Arrays** keep their order.
 - **Numbers** are exact, with no floating point: the value is written as
