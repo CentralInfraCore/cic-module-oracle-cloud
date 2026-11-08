@@ -23,9 +23,15 @@ is written down and what is in the code; where the sources are silent it says so
   `architecture.md`, `relay-requirements.md`, the D5 and M4 documents); CIC-Relay at `55a899f`
   (`features/feature-011-oci-provider/design.md`, `core/nexus/iac`, `core/nexus/drift`,
   `core/nexus/ois`, `core/cabinet`, `cmd/relay/cic_flow_*`).
-- **Not read in this pass:** the Forms engine and its docs (`cic-primitive-forms`,
+- **Not read in the first pass:** the Forms engine and its docs (`cic-primitive-forms`,
   `cic-primitive-engine`), the schema registry (`cic-schema-registry`), `primitives`,
   `CIC-basic-knowledge`, and the OIS repository. Statements about them are second-hand and marked.
+- **Second pass (section 6):** the Forms library's README, `docs/P1-SUPPORTED-SUBSET.md`,
+  `docs/P5-RESOLVE-MATERIALIZE-RECEIPT.md` and the ADR list (`cic-primitive-forms` at `5531111`),
+  the engine's `docs/MATERIALIZATION-SPEC.md` scope note and `docs/RECEIPT-SCHEMA.md`
+  (`cic-primitive-engine` at `93c793a`), a text search of both repositories, and the top level
+  of the schema registry. **Still not read:** the ADR bodies, the engine and library source beyond
+  the text search, the schemas in the registry, `primitives`, `CIC-basic-knowledge`, OIS.
 
 ## 2. What exists
 
@@ -48,7 +54,7 @@ concept -> code -> runtime -> audit
 
 | Link | State | Evidence |
 |---|---|---|
-| intent to the expanded object (Forms) | code exists elsewhere, **not read** here | `forms-integration-direction.md` section 3 |
+| intent to the expanded object (Forms) | code exists elsewhere (pure library, `implemented` per its README); read at document level in section 6, not at source level | `forms-integration-direction.md` section 3 |
 | **realization context: which provider account, environment, contract version and execution identity this object is realized in** | **does not exist** | no document in this repository defines it; no Go type for a realization, deployment context, environment or binding in the Relay's `cmd`, `core`, `pkg` at `55a899f` (searched by type name); in the spec's example the state object's `binding` has only `provider` and `provider_id` |
 | derivation of `host`, `base_path`, `key_id` from it | does not exist | measured: all five target values are caller-supplied to every entry point (`destroy-invoke-binding.md`, `target-origin-and-path-safety.md`); the registry records no API version, base path or host |
 | routing an object to a module and an environment | `concept` | `forms-integration-direction.md` section 3 ("module routing") |
@@ -147,12 +153,77 @@ target is not an approval.
 6. **Lifecycle**: rotation and revocation of the execution identity binding; what happens to an
    approved but unexecuted plan when its context changes.
 7. **The Forms side**: where in "defaults with origin" and "policy resolution" a context-derived value
-   would enter; this needs the Forms engine and its documents read, which this pass did not do.
+   would enter. Answered in part by the second pass (section 6): it does not enter there; the open
+   points are D5-6 and D5-7.
+
+## 6. The Forms side (question 7), second pass
+
+Read: the Forms library `README.md`, `docs/P1-SUPPORTED-SUBSET.md`, `docs/P5-RESOLVE-MATERIALIZE-RECEIPT.md`
+and the ADR list (`cic-primitive-forms` at `5531111`); the engine's `docs/MATERIALIZATION-SPEC.md` (the
+scope note at its top) and `docs/RECEIPT-SCHEMA.md` (`cic-primitive-engine` at `93c793a`).
+
+### 6.1 What they say
+
+- **The Forms library is a pure library**: no Git, no network, no filesystem policy, no execution
+  context (README). Its defaults are **schema-declared**: `normalize` keeps `value_origins`
+  (`authored` or `default`, per position); `expand` keeps an origin (`authored` or `materialized`)
+  and an attestation (ADR 0010). `PolicyResolution` gives the effective access and modify rule per
+  position; its `unknown` is "a caller input, a P5 snapshot-reference not resolved".
+- **P5 is design, no code**: "Resolve (from supplied snapshot), materialize, receipt". Resolve is kept
+  out of the first units. No receipt producer exists "anywhere in the CIC ecosystem" as far as the
+  engine's own documents can show.
+- **The engine's scope correction**: `Parse`, `Normalize`, `Resolve` and `Validate` are "permanently the
+  environment's job". The engine receives a candidate **materialized object**, checks its Complete
+  property, canonicalizes it and digests it. Reference resolution and default or derivation decisions
+  "are facts the object's environment establishes and writes onto it".
+- **The receipt contract is closed** (15 required fields): `applied_defaults[]` (the rule is the literal
+  `schema-default`) and `derived_values[]` (`path`, `rule` = `name-vN`, `inputs`, `value_digest`).
+  `inputs` is a deduplicated, sorted **set of paths the derivation read**; `input_digest` is the
+  digest of the canonical authored input; "`rule` and `inputs` are the producer's statements"; there
+  is no signature field.
+- **Nothing in either repository carries target or realization data**: a text search of
+  `cic-primitive-forms` finds no occurrence of `realization`, `deployment context`, `tenancy`,
+  `oraclecloud`, `base_path`, `key_id` or `provider_id`; in `cic-primitive-engine` the only hits are
+  `provider_id` in the OCI conformance fixtures and `plan.rs` tests, as a state-only field. The schema
+  registry's `docs/en/architecture.md` uses "environment" for the execution environment of its
+  compiler, which is unrelated.
+
+### 6.2 What follows for the realization context
+
+- **A schema default cannot carry it.** Defaults are the schema's and the rule is `schema-default`; a
+  host or a region in a default would make the schema environment-specific, and the object it
+  describes is meant to be provider-independent.
+- **The library cannot derive it**, by construction (no execution context).
+- **The named seam for facts from outside is `Resolve` from a supplied snapshot (P5, design only).**
+  A realization context would be such a snapshot, supplied by the layer that realizes the object.
+  That seam does not exist in code.
+- **The audit form has a gap.** A `derived_values` entry names its `inputs` as paths of the object. A
+  value derived from a context that is not part of the object has no such path, and the receipt
+  contract is closed, so it cannot name that input today.
+- **Two ways to close it** (the owner's choice; neither is implemented): (i) the context is
+  materialized **into** the object, so `derived_values` can name it as paths, which makes the
+  object environment-specific and changes the closed receipt contract in the engine repository;
+  (ii) the context stays **outside** the object and is bound at the execution layer by the realization
+  digest of section 4, with the receipt unchanged and the object provider-independent. Section 4
+  was written for (ii).
+- **A word that means two things.** The engine's "environment" is the processing layer that prepares
+  the object (Parse, Normalize, Resolve, Validate). The realization "environment" of section 4 is a
+  provider account, region and realm. They are different things; a document that says "the
+  environment writes the host onto the object" would be reading the engine's word with the CIC
+  model's meaning.
+
+### 6.3 Decisions this adds
+
+- **D5-6.** The realization context inside the object (i) or outside it, bound at the execution layer
+  (ii). Section 4 assumes (ii); (i) needs an engine contract change.
+- **D5-7.** Names: a distinct word for the realization environment, so it is not confused with the
+  engine's "environment".
 
 ## What this does not claim
 
 The realization context is not implemented anywhere and no document in this repository defined it
-before this one. Nothing here is verified against the Forms engine, the schema registry or the OIS
-repository, which were not read in this pass. The Relay facts are from `55a899f`, read, not run.
+before this one. Section 6 rests on documents and a text search of the Forms and engine repositories, not on their
+source or their ADR bodies; nothing here is verified against the schemas of the schema registry or
+the OIS repository, which were not read. The Relay facts are from `55a899f`, read, not run.
 Section 4 is a proposal: the premise it rests on is the owner's statement of the model, and the
 open questions above are the points where that statement has to be completed before anything is built.
