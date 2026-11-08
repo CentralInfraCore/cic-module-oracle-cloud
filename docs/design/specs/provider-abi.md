@@ -151,6 +151,15 @@ execution-result:                 # as implemented
   no id should end as `accepted` with the id still pending, and what `poll` would
   have to return to deliver the created resource's identifier.
 
+### What `plan` requires of its inputs
+
+`desired.data` and `observed.data` must be strict, bounded JSON with exact numbers and
+no repeated object key, as defined in `canonical-json.md` (cic-canonical-json/1);
+otherwise `plan` answers `validation` with `field_path: desired.data` or
+`observed.data`. Values are compared by their canonical form, so key order, whitespace,
+escape spelling and number spelling (`1`, `1.0`, `1e0`) do not make a difference, while
+different values always do (two integers above 2^53 are never equal).
+
 ### What `execute` accepts before it sends anything
 
 Two independent checks run over the **whole** plan before the first step is signed

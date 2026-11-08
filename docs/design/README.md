@@ -26,6 +26,9 @@ namespace it opens. Written 2026-07-18 from the design session recorded in
   extraction.
 - [specs/state-model.md](specs/state-model.md) — intent/state object-level
   correspondence and the `effective_config` projection.
+- [specs/canonical-json.md](specs/canonical-json.md) — `cic-canonical-json/1`: the exact JSON
+  value-equality and canonical form `plan` decides on (and a later plan digest will be
+  computed over).
 
 ## Direction
 

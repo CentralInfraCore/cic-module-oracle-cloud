@@ -422,6 +422,19 @@ func Plan(auth, data []byte) ([]byte, error) {
 	if envErrs := checkEnvelope("observed", req.Observed); len(envErrs) > 0 {
 		return errResult(&envErrs[0])
 	}
+	// Plan decides "noop" and which fields changed by comparing JSON values, so both
+	// payloads must be strict, bounded JSON with exact numbers and no repeated key
+	// (cic-canonical-json/1). A payload that is not is refused here instead of being
+	// read with the last duplicate winning or a number rounded to a float64.
+	for _, pl := range []struct {
+		name string
+		data json.RawMessage
+	}{{"desired.data", req.Desired.Data}, {"observed.data", req.Observed.Data}} {
+		if _, err := canonicalJSON(pl.data); err != nil {
+			return errResult(&providerError{Class: classValidation, FieldPath: pl.name,
+				Message: pl.name + " is not canonicalizable JSON: " + err.Error()})
+		}
+	}
 
 	c, ok := resourceContracts()[req.Kind]
 	if !ok {
@@ -563,27 +576,20 @@ func planHash(kind string, desired, observed schemaPayload) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// canonicalEqual compares two JSON instances structurally (key order and
-// insignificant whitespace ignored), by re-marshalling through Go's map/slice
-// model. Adequate for the noop decision on canonical-json payloads.
+// canonicalEqual reports whether two JSON texts are the same value, by their
+// cic-canonical-json/1 form (canonical_json.go): exact numbers, key order and
+// whitespace and escape spelling ignored. A text that is not strict JSON, or beyond
+// the bounds, is equal to nothing, itself included.
 func canonicalEqual(a, b json.RawMessage) bool {
-	na, err := reencode(a)
+	na, err := canonicalJSON(a)
 	if err != nil {
 		return false
 	}
-	nb, err := reencode(b)
+	nb, err := canonicalJSON(b)
 	if err != nil {
 		return false
 	}
 	return string(na) == string(nb)
-}
-
-func reencode(raw json.RawMessage) ([]byte, error) {
-	var v interface{}
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return nil, err
-	}
-	return json.Marshal(v)
 }
 
 // ---- sign+send ops (scaffold — host capability not yet available) ----

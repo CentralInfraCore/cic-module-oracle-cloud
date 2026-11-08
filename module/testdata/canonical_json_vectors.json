@@ -1,0 +1,397 @@
+{
+ "format": "cic-canonical-json/1",
+ "about": "Language-neutral test vectors for the cic-canonical-json/1 canonical form (see docs/design/specs/canonical-json.md). canonical: the input text must canonicalize to exactly `output`. equal: both texts must have the same canonical form. distinct: the canonical forms must differ. reject: the input must be refused (a hex field is the raw input bytes).",
+ "canonical": [
+  {
+   "name": "keys are sorted",
+   "input": "{\"b\":1,\"a\":2}",
+   "output": "{\"a\":2e0,\"b\":1e0}"
+  },
+  {
+   "name": "whitespace is dropped",
+   "input": " \t\r\n{ \"a\" : [ 1 , 2 ] }\n",
+   "output": "{\"a\":[1e0,2e0]}"
+  },
+  {
+   "name": "key order is by UTF-8 bytes",
+   "input": "{\"é\":1,\"z\":2}",
+   "output": "{\"z\":2e0,\"é\":1e0}"
+  },
+  {
+   "name": "escaped key equals its literal",
+   "input": "{\"\\u0061\":1}",
+   "output": "{\"a\":1e0}"
+  },
+  {
+   "name": "integer",
+   "input": "1",
+   "output": "1e0"
+  },
+  {
+   "name": "integer with fraction zero",
+   "input": "1.0",
+   "output": "1e0"
+  },
+  {
+   "name": "exponent zero",
+   "input": "1e0",
+   "output": "1e0"
+  },
+  {
+   "name": "trailing zeros move into the exponent",
+   "input": "100",
+   "output": "1e2"
+  },
+  {
+   "name": "upper-case exponent",
+   "input": "1E2",
+   "output": "1e2"
+  },
+  {
+   "name": "fraction",
+   "input": "0.5",
+   "output": "5e-1"
+  },
+  {
+   "name": "negative zero is zero",
+   "input": "-0",
+   "output": "0"
+  },
+  {
+   "name": "zero with fraction is zero",
+   "input": "0.0",
+   "output": "0"
+  },
+  {
+   "name": "negative fraction",
+   "input": "-1.50",
+   "output": "-15e-1"
+  },
+  {
+   "name": "fraction with a negative exponent",
+   "input": "10.0e-1",
+   "output": "1e0"
+  },
+  {
+   "name": "a number beyond float64 precision keeps every digit",
+   "input": "123456789012345678901234567890",
+   "output": "12345678901234567890123456789e1"
+  },
+  {
+   "name": "2^53+1 is kept exactly",
+   "input": "9007199254740993",
+   "output": "9007199254740993e0"
+  },
+  {
+   "name": "a non-ASCII escape is written as the character",
+   "input": "\"\\u00e9\"",
+   "output": "\"é\""
+  },
+  {
+   "name": "html characters are not escaped",
+   "input": "\"\\u003c\\u003e\\u0026\"",
+   "output": "\"<>&\""
+  },
+  {
+   "name": "an escaped slash is a slash",
+   "input": "\"\\/\"",
+   "output": "\"/\""
+  },
+  {
+   "name": "control characters become \\u00xx in lower case",
+   "input": "\"\\n\\u001F\\t\"",
+   "output": "\"\\u000a\\u001f\\u0009\""
+  },
+  {
+   "name": "a surrogate pair is written as the character",
+   "input": "\"\\ud83d\\ude00\"",
+   "output": "\"😀\""
+  },
+  {
+   "name": "quote and backslash are escaped",
+   "input": "\"\\\"\\\\\"",
+   "output": "\"\\\"\\\\\""
+  },
+  {
+   "name": "literals",
+   "input": "[true,false,null]",
+   "output": "[true,false,null]"
+  },
+  {
+   "name": "empty containers",
+   "input": "{\"a\":{},\"b\":[]}",
+   "output": "{\"a\":{},\"b\":[]}"
+  },
+  {
+   "name": "nested order is kept for arrays",
+   "input": "[{\"b\":1,\"a\":2},[3,1]]",
+   "output": "[{\"a\":2e0,\"b\":1e0},[3e0,1e0]]"
+  }
+ ],
+ "equal": [
+  {
+   "name": "whitespace",
+   "a": "{\"a\":1}",
+   "b": " { \"a\" : 1 } "
+  },
+  {
+   "name": "key order",
+   "a": "{\"a\":1,\"b\":2}",
+   "b": "{\"b\":2,\"a\":1}"
+  },
+  {
+   "name": "1, 1.0, 1e0 and 10e-1",
+   "a": "1",
+   "b": "1.0"
+  },
+  {
+   "name": "1e0",
+   "a": "1",
+   "b": "1e0"
+  },
+  {
+   "name": "10e-1",
+   "a": "1",
+   "b": "10e-1"
+  },
+  {
+   "name": "100 and 1e2",
+   "a": "100",
+   "b": "1e2"
+  },
+  {
+   "name": "negative zero",
+   "a": "-0",
+   "b": "0"
+  },
+  {
+   "name": "escape and character",
+   "a": "\"\\u00e9\"",
+   "b": "\"é\""
+  },
+  {
+   "name": "html escape",
+   "a": "\"\\u003c\"",
+   "b": "\"<\""
+  }
+ ],
+ "distinct": [
+  {
+   "name": "2^53+1 and 2^53",
+   "a": "{\"n\":9007199254740993}",
+   "b": "{\"n\":9007199254740992}"
+  },
+  {
+   "name": "1 and 1.5",
+   "a": "1",
+   "b": "1.5"
+  },
+  {
+   "name": "0.1 and a number that rounds to it in float64",
+   "a": "0.1",
+   "b": "0.10000000000000001"
+  },
+  {
+   "name": "1e400 and 1e401 (both overflow float64)",
+   "a": "1e400",
+   "b": "1e401"
+  },
+  {
+   "name": "case matters",
+   "a": "\"a\"",
+   "b": "\"A\""
+  },
+  {
+   "name": "array order matters",
+   "a": "[1,2]",
+   "b": "[2,1]"
+  },
+  {
+   "name": "a number is not its string",
+   "a": "{\"a\":1}",
+   "b": "{\"a\":\"1\"}"
+  },
+  {
+   "name": "null is not the string null",
+   "a": "null",
+   "b": "\"null\""
+  },
+  {
+   "name": "true is not the string true",
+   "a": "true",
+   "b": "\"true\""
+  },
+  {
+   "name": "an empty array is not an empty object",
+   "a": "[]",
+   "b": "{}"
+  },
+  {
+   "name": "a present key is not an absent key",
+   "a": "{\"a\":1}",
+   "b": "{}"
+  }
+ ],
+ "reject": [
+  {
+   "name": "duplicate key",
+   "input": "{\"a\":1,\"a\":2}"
+  },
+  {
+   "name": "duplicate key through an escape",
+   "input": "{\"a\":1,\"\\u0061\":2}"
+  },
+  {
+   "name": "duplicate key in a nested object",
+   "input": "{\"o\":{\"k\":1,\"k\":1}}"
+  },
+  {
+   "name": "trailing comma in an object",
+   "input": "{\"a\":1,}"
+  },
+  {
+   "name": "trailing comma in an array",
+   "input": "[1,]"
+  },
+  {
+   "name": "leading zero",
+   "input": "01"
+  },
+  {
+   "name": "plus sign",
+   "input": "+1"
+  },
+  {
+   "name": "no integer part",
+   "input": ".5"
+  },
+  {
+   "name": "no fraction digits",
+   "input": "1."
+  },
+  {
+   "name": "lone minus",
+   "input": "-"
+  },
+  {
+   "name": "NaN",
+   "input": "NaN"
+  },
+  {
+   "name": "Infinity",
+   "input": "Infinity"
+  },
+  {
+   "name": "exponent without digits",
+   "input": "1e"
+  },
+  {
+   "name": "exponent sign without digits",
+   "input": "1e+"
+  },
+  {
+   "name": "single quotes",
+   "input": "'a'"
+  },
+  {
+   "name": "unquoted key",
+   "input": "{a:1}"
+  },
+  {
+   "name": "comment",
+   "input": "1 // c"
+  },
+  {
+   "name": "raw tab in a string",
+   "input": "\"a\tb\""
+  },
+  {
+   "name": "raw newline in a string",
+   "input": "\"a\nb\""
+  },
+  {
+   "name": "bad escape",
+   "input": "\"\\x\""
+  },
+  {
+   "name": "short unicode escape",
+   "input": "\"\\u12\""
+  },
+  {
+   "name": "lone high surrogate",
+   "input": "\"\\ud800\""
+  },
+  {
+   "name": "lone low surrogate",
+   "input": "\"\\udc00\""
+  },
+  {
+   "name": "high surrogate then a non-surrogate escape",
+   "input": "\"\\ud800\\u0041\""
+  },
+  {
+   "name": "empty input",
+   "input": ""
+  },
+  {
+   "name": "whitespace only",
+   "input": " \n\t"
+  },
+  {
+   "name": "trailing data",
+   "input": "{} x"
+  },
+  {
+   "name": "two values",
+   "input": "{}{}"
+  },
+  {
+   "name": "truncated literal",
+   "input": "tru"
+  },
+  {
+   "name": "unterminated array",
+   "input": "["
+  },
+  {
+   "name": "unterminated object",
+   "input": "{\"a\""
+  },
+  {
+   "name": "missing value",
+   "input": "{\"a\":}"
+  },
+  {
+   "name": "unterminated string",
+   "input": "\"abc"
+  },
+  {
+   "name": "exponent beyond the limit",
+   "input": "1e10001"
+  },
+  {
+   "name": "negative exponent beyond the limit",
+   "input": "1e-10001"
+  },
+  {
+   "name": "exponent with too many digits",
+   "input": "0e99999999"
+  },
+  {
+   "name": "byte order mark",
+   "input_hex": "efbbbf7b7d"
+  },
+  {
+   "name": "invalid UTF-8 byte in a string",
+   "input_hex": "22ff22"
+  },
+  {
+   "name": "overlong UTF-8 encoding in a string",
+   "input_hex": "22c08022"
+  },
+  {
+   "name": "UTF-8 encoded surrogate in a string",
+   "input_hex": "22eda08022"
+  }
+ ]
+}
