@@ -490,11 +490,14 @@ func TestEquivalentSpellingsOfDesiredAndObservedGiveOnePlanDigest(t *testing.T) 
 		{"plain", `{"displayName":"new","compartmentId":"ocid1.compartment..b"}`, `{"displayName":"old","compartmentId":"ocid1.compartment..a"}`},
 		{"key order", `{"compartmentId":"ocid1.compartment..b","displayName":"new"}`, `{"compartmentId":"ocid1.compartment..a","displayName":"old"}`},
 		{"whitespace", ` { "displayName" : "new" , "compartmentId" : "ocid1.compartment..b" } `, "{\n\t\"displayName\": \"old\",\n\t\"compartmentId\": \"ocid1.compartment..a\"\n}"},
-		{"escapes", `{"displayName":"new","compartmentId":"ocid1.compartment..b"}`, `{"displayName":"old","compartmentId":"ocid1.compartment..a"}`},
+		{"escapes", `{"displayName":"n` + backslash + `u0065w","compartmentId":"ocid1.compartment..b"}`, `{"displayName":"o` + backslash + `u006cd","compartmentId":"ocid1.compartment..a"}`},
 	}
 	want := m4aPlan(t, bindingKind, spellings[0].desired, spellings[0].observed, b)
 	for _, s := range spellings[1:] {
 		t.Run(s.name, func(t *testing.T) {
+			if s.name == "escapes" && (!strings.Contains(s.desired, backslash+"u") || !strings.Contains(s.observed, backslash+"u")) {
+				t.Fatalf("test setup: the escapes spelling carries no u-escape (%q, %q): it would test identical text", s.desired, s.observed)
+			}
 			got := m4aPlan(t, bindingKind, s.desired, s.observed, b)
 			if got.PlanDigest != want.PlanDigest || got.ExecutionDigest != want.ExecutionDigest {
 				t.Errorf("plan_digest %s, want %s: the same state spelled differently must give one digest", got.PlanDigest, want.PlanDigest)

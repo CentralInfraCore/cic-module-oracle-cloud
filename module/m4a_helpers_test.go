@@ -15,6 +15,11 @@ import (
 
 const m4aHash = "abc123"
 
+// backslash is spelled as a hex escape so that no editor or tool between this file and the
+// compiler can rewrite a u-escape that a test builds on top of it (that happened once: the
+// "escape spelling" cases of this package compared identical text).
+const backslash = "\x5c"
+
 func m4aPayload(id, data string) schemaPayload {
 	return schemaPayload{SchemaID: id, SchemaVersion: "v0.1.0", SchemaHash: m4aHash, Encoding: encCanonicalJSON, Data: json.RawMessage(data)}
 }
