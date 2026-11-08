@@ -197,7 +197,11 @@ the component id (`core/cabinet/service.go:228`) and dispatches only `init`, `pr
 `get` and `notify` (`:234-240`, `core/cabinet/cicwasm.go`). The `cic-flow` host functions
 get `cicFlowDeps{sign, doer, egress}` (`cmd/relay/cic_flow_host_funcs.go:51-55`): no run, no
 principal, no plan. `sign` and `actuate` each accept a `trace_id` in the request and never
-use it (`:112-116`, `:141-148`); it is chosen by the guest, so it cannot be an authority.
+use it (`:112-116`, `:141-148`); it is chosen by the guest, so it cannot be an authority. Beyond that, the two host
+functions are independent of each other and of any plan: `sign` signs whatever bytes the
+guest hands it (`:112-140`), and `actuate` forwards the guest's own method, URL, headers
+(its `Authorization` verbatim) and body to any destination the egress policy allows
+(`:141-190`). Neither knows what execution, step or approval a call belongs to.
 
 **Required.** Each `sign`/`actuate` call is attributable, by the relay's own authenticated
 context and not by anything the guest supplies, to one authenticated principal, one run and
@@ -222,11 +226,31 @@ names the execution's `execution_digest`: authentic, not expired, not revoked, i
 the kind and operation, issued by a policy decision that is identified. The module's digest
 is compared; the module is not asked whether the approval is genuine.
 
-**Negative test.** No approval; an approval for another `execution_digest`; an expired or
-revoked one: no provider request in each case.
+**The approval must bind the actual host call, not only the module's entry point (a
+required security property).** Verifying a valid `execution_digest` and approval proves
+nothing about which HTTP request leaves the relay, because `sign` and `actuate` are
+separate host functions that act on what the guest hands them. Before every `actuate` that
+can cause a side effect, the relay checks, from its own authenticated context, that the
+actual method, target, request body and step belong to the reserved, approved execution;
+the set of external requests an execution may make is determined from the approved
+execution (for instance through the plan its digest covers), never from what the guest asks
+for. The same holds for `sign`: a signature over bytes the relay cannot tie to a step of a
+reserved execution is itself a capability, so a `sign` that serves no such step is refused.
+A digest or a trace id the guest supplies is not proof of authority. How the relay does
+this is its own design; that it does is not optional. The module's own gate (M4a) covers
+only the module's `execute` path and cannot protect the host boundary.
+
+**Negative tests.**
+1. No approval; an approval for another `execution_digest`; an expired or revoked one: no
+   provider request in each case.
+2. A valid approval, and the guest sends a different HTTP request (another method, target,
+   body or step than the approved execution's): no provider request.
+3. The guest calls `cic-flow.actuate` (or `cic-flow.sign`) directly, outside any reserved,
+   approved execution context: refused, no provider request.
 
 **Acceptance.** The only way a `sign` or `actuate` reaches the provider is through a verified
-approval for exactly that execution.
+approval for exactly that execution, and only for the requests that execution is approved to
+make.
 
 ## R8 - Atomic, durable single use, and an UNKNOWN state · needed
 
@@ -244,18 +268,30 @@ evidence (for an asynchronous operation including the correlation of the Work Re
 the execution). Concurrent requests for one approval: at most one executes. A restart
 finds the state as left.
 
+The reservation and the write-ahead record are **safety state, not telemetry**: their
+durable recording is fail-closed. If a reservation or a write-ahead record cannot be made
+durable, no provider request is sent. They cannot be best-effort. (This is different from the
+optional trace recording the cabinet does today: see R9.)
+
 **Negative tests.** Two or more concurrent uses; a lost answer; a restart after the
-reservation; a restart after the write-ahead; a module that refuses with zero sends.
+reservation; a restart after the write-ahead; a module that refuses with zero sends; the
+durable store unavailable or failing at the reservation and at the write-ahead (no provider
+request in either case).
 
 **Acceptance.** For one approval the provider sees the requests of at most one execution,
 whatever the concurrency, restarts or lost answers; an execution of unknown outcome is
-visible as such.
+visible as such; and no provider request leaves while the state that makes it safe cannot be
+recorded.
 
 ## R9 - Decision context and the five kinds of evidence in the ProofTrace · needed
 
 **Current behaviour (read).** The cic-flow host functions at `55a899f` use no audit or
 ProofTrace sink (no use of one in `cmd/relay/cic_flow_*.go`, outside tests). R4 above
-covers the chained audit entry on the FFI path.
+covers the chained audit entry on the FFI path. The cabinet's ProofTrace recorder is
+optional (`nil` skips recording, `core/cabinet/service.go:99`, `:105-106`) and runs once,
+after every step has already run, with a recording failure logged and the workflow
+continuing (`:299-307`). That is a post-hoc, best-effort record: it is not a write-ahead
+record and cannot gate a provider request.
 
 **Required.** An execution's trace records, as separate kinds of entry, what was requested,
 what was authorized, what was sent to the provider, what the provider confirmed, and what
@@ -263,7 +299,15 @@ remains uncertain; and carries: the authenticated run id, the policy decision id
 of the verified module artifact, the reservation transition, and the three digests. A signed
 observation is its own kind and is never recorded as the proven physical state.
 
-**Negative test.** An UNKNOWN execution shows an `uncertain` entry and no `confirmed` one.
+The evidence that makes an execution safe (the reservation, the write-ahead record, the
+transitions of R8) is **durable and fail-closed**; richer or analytic processing of the
+trace (display, aggregation, export) may stay optional and best-effort. The two are kept
+separate so that losing a display does not lose a safety record, and a missing safety record
+never goes unnoticed.
+
+**Negative test.** An UNKNOWN execution shows an `uncertain` entry and no `confirmed` one;
+a durable evidence record that cannot be written stops the execution before the provider
+request (R8).
 
 **Acceptance.** From the trace alone one can tell the five apart for any execution.
 
@@ -278,7 +322,8 @@ relay must not route them around R7 to R9. (The module still has to produce that
 see "Entry points" in the spec.)
 
 **Negative test.** A direct `destroy` or `invoke` with no approval: refused, no provider
-request.
+request; and the same through the host boundary (a guest calling `cic-flow.actuate`
+directly with a delete or an action request, R7 test 3).
 
 **Acceptance.** No operation that can change the provider's state is reachable without an
 approval.

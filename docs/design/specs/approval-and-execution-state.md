@@ -67,6 +67,11 @@ ISSUED --reserve--> RESERVED --about to send step i--> SEND_ATTEMPTED(i) --answe
   SEND_ATTEMPTED older than its lease may be released; a SEND_ATTEMPTED with no recorded
   answer becomes UNKNOWN.
 
+The reservation and the write-ahead record are **safety state, not telemetry**. Recording
+them durably is fail-closed: if a reservation or a write-ahead record cannot be made durable,
+no provider request is sent. They cannot be best-effort, and they are kept apart from any
+optional trace processing (see "Evidence").
+
 ### UNKNOWN is not failure and is not retryable
 
 The case that decides the design: the Relay sent a provider request and lost the answer
@@ -92,6 +97,25 @@ Reading the Relay at `55a899f` (R8): the guest-facing `actuate` returns every tr
 error as one error text, so a request that was never sent and one whose answer was lost look
 alike to the guest. That is why the UNKNOWN rule has to be the Relay's.
 
+## The host boundary
+
+The module's own gate (M4a) protects only the module's `execute` path. The thing that causes
+an external side effect is not that path but the host boundary: `cic-flow.sign` signs the
+bytes the guest hands it, and `cic-flow.actuate` forwards the guest's own method, URL,
+headers (its `Authorization` verbatim) and body (read at `55a899f`). A valid
+`execution_digest` and a verified approval therefore prove nothing about which HTTP request
+actually leaves, unless the relay ties the host calls to the approved execution.
+
+**Required property (not an implementation).** Before every `actuate` that can cause a side
+effect the relay checks, from its own authenticated context, that the actual method, target,
+request body and step belong to the reserved, approved execution; the requests an execution
+may make are determined from the approved execution (for instance through the plan its
+digest covers), never from what the guest asks for. A `sign` that serves no step of a
+reserved execution is refused too, because a signature over bytes the relay cannot tie to a
+step is a capability on its own. A digest or a trace id supplied by the guest is not proof of
+authority. Another guest path, another call, or a modified request must not be able to go
+around the approval.
+
 ## Evidence (ProofTrace)
 
 The trace of an execution keeps five things apart, as separate kinds of entry, never
@@ -110,6 +134,14 @@ at which time. It is never recorded as the proven physical state of the resource
 
 The entries are hash-chained as the existing audit mechanism does (R4), and the trace names
 the same `execution_digest` the module echoes in its result.
+
+Two kinds of recording are kept apart. The evidence that makes an execution safe (the
+reservation, the write-ahead record, the transitions above) is durable and fail-closed. Richer
+or analytic processing of the trace (display, aggregation, export) may stay optional and
+best-effort. In the Relay at `55a899f` the cabinet's ProofTrace recorder is optional (`nil`
+skips it, `core/cabinet/service.go:99`, `:105-106`) and runs once, after all steps have run,
+with a failure logged and the workflow continuing (`:299-307`): a post-hoc, best-effort
+record, which is not what the reservation and the write-ahead record need to be.
 
 ## Entry points
 
@@ -145,6 +177,9 @@ means zero `sign` and zero `actuate` calls at the provider seam.
 | Module refused | the module refuses the request in its own gates (zero sends) | RESERVED returns to ISSUED; the approval is still usable within its window |
 | Changed module artifact | the module digest differs from the one verified when the approval was bound | the approval is not usable; no provider request |
 | Destroy or invoke without approval | `destroy` or `invoke` called directly | refused, no provider request |
+| A different request under a valid approval | a reserved, approved execution; the guest sends another method, target, body or step than the approved one | refused, no provider request |
+| The host function called directly | the guest calls `cic-flow.actuate` or `cic-flow.sign` outside any reserved, approved execution context | refused, no provider request |
+| Durable record cannot be written | the store fails at the reservation, and again at a write-ahead record | no provider request in either case |
 | Trace shape | any execution, including an UNKNOWN one | the five kinds are present where they apply and distinguishable; an observation is not labelled as proven state |
 
 ## What this does not claim
