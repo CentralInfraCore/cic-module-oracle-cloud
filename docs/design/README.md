@@ -31,6 +31,9 @@ namespace it opens. Written 2026-07-18 from the design session recorded in
   computed over.
 - [specs/plan-digest.md](specs/plan-digest.md) — `plan_digest`, `target_digest`,
   `execution_digest` and the gate `execute` applies before it signs anything.
+- [specs/approval-and-execution-state.md](specs/approval-and-execution-state.md) — M4b (concept):
+  what an approval names, the execution state of one approval (atomic reservation, UNKNOWN),
+  the ProofTrace evidence, and the acceptance tests the Relay side will be held to.
 
 ## Direction
 
