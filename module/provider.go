@@ -810,6 +810,7 @@ func shortASCII(s string) string {
 // operation; it cannot invent one or override what the registry says it is. The
 // comparison is exact (case, placeholder name, trailing slash): Plan itself copies
 // method and path from the registry, so any difference is not a plan Plan made.
+// A read-role operation is refused too (D-M3-1): it belongs to observe.
 // The whole plan is checked here, before the first step is signed or sent.
 func checkPlanAgainstRegistry(c resourceContract, ops []providerOperation) *providerError {
 	for i, po := range ops {
@@ -818,6 +819,12 @@ func checkPlanAgainstRegistry(c resourceContract, ops []providerOperation) *prov
 		if !ok {
 			return &providerError{Class: classValidation, FieldPath: field,
 				Message: "operation " + shortASCII(po.Operation) + " is not defined for " + c.kind}
+		}
+		// A read is Observe's job, not a plan step: Plan never emits one, and Execute
+		// does not run one even when it matches the registry exactly (D-M3-1).
+		if reg.role == roleRead {
+			return &providerError{Class: classValidation, FieldPath: field,
+				Message: "operation " + po.Operation + " is a read, not an executable plan step: use observe"}
 		}
 		if po.Method != reg.method || po.Path != reg.path {
 			return &providerError{Class: classValidation, FieldPath: field,

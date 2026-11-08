@@ -169,7 +169,9 @@ no sign and no actuate call.
   step must name an operation the kind's registry defines, and its `method` and
   `path` must equal the registry's exactly (case, placeholder name, trailing slash;
   an empty method or path is a mismatch). The plan can name an operation; it cannot
-  invent one or override what the registry says it is. `i` is the first
+  invent one or override what the registry says it is. A `read`-role operation
+  (for example `GetVcn`) is refused as a step even when it matches the registry: a
+  read is `observe`'s job and `plan` never emits one. `i` is the first
   non-conforming step.
 
 What these checks do **not** say: whether the id names the right resource, whether

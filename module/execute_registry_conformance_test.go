@@ -78,6 +78,33 @@ func TestExecuteRefusesAPlanStepThatTheRegistryDoesNotDefine(t *testing.T) {
 	}
 }
 
+// A read is Observe's job: Plan never emits one and Execute does not run one, even
+// though the registry defines it and the step matches the registry exactly (D-M3-1).
+func TestExecuteRefusesAReadRoleStepEvenWhenItMatchesTheRegistry(t *testing.T) {
+	for _, kind := range sortedKinds() {
+		c := resourceContracts()[kind]
+		name, op, ok := c.opByRole(roleRead)
+		if !ok {
+			t.Fatalf("%s has no read operation: the control would test nothing", kind)
+		}
+		t.Run(kind+"/"+name, func(t *testing.T) {
+			mock := &cicFlowMock{Reply: replyWith(200, `{}`, nil)}
+			restore := mock.wireHostSeam()
+			defer restore()
+			out, err := Execute(nil, marshalReq(t, executeRequest{
+				Kind:    kind,
+				Plan:    executionPlan{ProviderOperations: []providerOperation{{Operation: name, Method: op.method, Path: op.path}}},
+				Config:  schemaPayload{Data: json.RawMessage(`{}`)},
+				Binding: bindingWith("ocid1." + kindType(kind) + ".oc1..conformance"),
+			}))
+			if err != nil {
+				t.Fatalf("Execute returned a Go error: %v", err)
+			}
+			wantPlanRefusal(t, decodeResult(t, out), mock, 0)
+		})
+	}
+}
+
 func TestExecuteRefusesAStepWhoseMethodOrPathDiffersFromTheRegistry(t *testing.T) {
 	cases := []struct {
 		name string
@@ -150,16 +177,11 @@ func TestTheRefusalNamesTheFirstNonConformingStep(t *testing.T) {
 // run with exactly the registry's method and path, still executes once and sends the
 // request the registry describes.
 func TestExecuteStillRunsEveryRegistryOperationWithItsOwnMethodAndPath(t *testing.T) {
-	var kinds []string
-	for k := range resourceContracts() {
-		kinds = append(kinds, k)
-	}
-	sort.Strings(kinds)
-	for _, kind := range kinds {
+	for _, kind := range sortedKinds() {
 		c := resourceContracts()[kind]
 		var names []string
 		for n, o := range c.operations {
-			if o.role != roleRead { // a read is Observe's job; see the contract note
+			if o.role != roleRead { // a read is refused by Execute (D-M3-1), see its own test
 				names = append(names, n)
 			}
 		}
@@ -190,8 +212,13 @@ func TestExecuteStillRunsEveryRegistryOperationWithItsOwnMethodAndPath(t *testin
 				if mock.signCount() != 1 || mock.actuateCount() != 1 {
 					t.Fatalf("%d sign / %d actuate calls, want exactly 1 each", mock.signCount(), mock.actuateCount())
 				}
-				if got := mock.lastActuate(t).Method; got != op.method {
-					t.Errorf("request method = %q, want the registry's %q", got, op.method)
+				call := mock.lastActuate(t)
+				if call.Method != op.method {
+					t.Errorf("request method = %q, want the registry's %q", call.Method, op.method)
+				}
+				wantURL := "https://" + bindingHost + "/20160918" + templatePath(op.path, "ocid1."+kindType(kind)+".oc1..conformance")
+				if call.URL != wantURL {
+					t.Errorf("request URL = %q, want %q", call.URL, wantURL)
 				}
 			})
 		}
@@ -202,4 +229,13 @@ func TestExecuteStillRunsEveryRegistryOperationWithItsOwnMethodAndPath(t *testin
 func kindType(kind string) string {
 	i := strings.LastIndex(kind, ":")
 	return kind[i+1:]
+}
+
+func sortedKinds() []string {
+	var kinds []string
+	for k := range resourceContracts() {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	return kinds
 }
