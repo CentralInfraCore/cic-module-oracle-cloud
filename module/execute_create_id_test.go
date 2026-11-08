@@ -42,12 +42,7 @@ func execVCN(t *testing.T, mock *cicFlowMock, po providerOperation, binding exec
 	restore := mock.wireHostSeam()
 	defer restore()
 
-	req, _ := json.Marshal(executeRequest{
-		Kind:    vcnKindForExec,
-		Plan:    executionPlan{ProviderOperations: []providerOperation{po}},
-		Config:  schemaPayload{Data: json.RawMessage(configJSON)},
-		Binding: binding,
-	})
+	req, _ := json.Marshal(m4aForOp(t, vcnKindForExec, po, configJSON, binding))
 	out, err := Execute(nil, req)
 	if err != nil {
 		t.Fatalf("Execute returned a Go error: %v", err)
@@ -242,23 +237,42 @@ func TestExecuteCreateRejectsAnAmbiguousBody(t *testing.T) {
 // stale and at worst someone else's resource: the step must report the answer's
 // id, never the binding's.
 func TestExecuteCreateIDComesFromTheResponseNotTheBinding(t *testing.T) {
-	const decoy = "ocid1.vcn.oc1..DECOY-FROM-THE-BINDING"
 	const actual = "ocid1.vcn.oc1..theonejustcreated"
 
 	mock := &cicFlowMock{Reply: replyWith(200, `{"id":"`+actual+`"}`, nil)}
-	binding := createBinding
-	binding.ResourceID = decoy
-	_, er := execVCN(t, mock, createVcnOp, binding, `{"compartmentId":"ocid1.compartment..c"}`)
+	_, er := execVCN(t, mock, createVcnOp, createBinding, `{"compartmentId":"ocid1.compartment..c"}`)
 
 	if er.Status != "succeeded" || len(er.Steps) != 1 {
 		t.Fatalf("execute = %+v, want succeeded with 1 step", er)
 	}
 	if got := er.Steps[0].ResourceID; got != actual {
-		t.Errorf("steps[0].resource_id = %q, want the response id %q (not the binding's %q)", got, actual, decoy)
+		t.Errorf("steps[0].resource_id = %q, want the response id %q", got, actual)
 	}
 	// ...and the create really did go to the collection path, with no id templated in.
 	if url := mock.lastActuate(t).URL; !strings.HasSuffix(url, "/20160918/vcns") {
 		t.Errorf("create URL = %q, want the collection path /20160918/vcns — a create has no resource id to template", url)
+	}
+}
+
+// A binding that names a resource while the plan creates one is refused before anything
+// is signed: a create has no id yet, so the only source of the created id is the answer.
+func TestExecuteCreateRefusesABindingThatAlreadyNamesAResource(t *testing.T) {
+	const decoy = "ocid1.vcn.oc1..DECOY-FROM-THE-BINDING"
+	mock := &cicFlowMock{Reply: replyWith(200, `{"id":"ocid1.vcn.oc1..theonejustcreated"}`, nil)}
+	restore := mock.wireHostSeam()
+	defer restore()
+	req := m4aForOp(t, vcnKindForExec, createVcnOp, `{"compartmentId":"ocid1.compartment..c"}`, createBinding)
+	req.Binding.ResourceID = decoy // changed by hand after the plan was built
+	raw, _ := json.Marshal(req)
+	out, err := Execute(nil, raw)
+	if err != nil {
+		t.Fatalf("Execute returned a Go error: %v", err)
+	}
+	if res := decodeResult(t, out); res.Status != "error" || res.Error == nil || res.Error.Class != classValidation {
+		t.Fatalf("status %q error %+v, want a validation error", res.Status, res.Error)
+	}
+	if mock.signCount() != 0 || mock.actuateCount() != 0 {
+		t.Errorf("%d sign / %d actuate calls, want none", mock.signCount(), mock.actuateCount())
 	}
 }
 

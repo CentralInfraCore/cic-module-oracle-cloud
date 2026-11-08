@@ -81,7 +81,9 @@ observation:
     observed_at: 2026-07-18T...
 
 execution-plan:
-  plan_id: sha256:...                    # the plan is hashable and signable
+  plan_digest: sha256:...                # identifies what the plan executes (plan-digest.md)
+  target_digest: sha256:...              # identifies where it runs
+  execution_digest: sha256:...           # binds the two; the value an approval names
   operation: create | update | replace | action | noop
   provider_operations:
     - { service: core, client: VirtualNetworkClient, operation: CreateVcn, request_model: CreateVcnDetails }
@@ -162,7 +164,7 @@ different values always do (two integers above 2^53 are never equal).
 
 ### What `execute` accepts before it sends anything
 
-Two independent checks run over the **whole** plan before the first step is signed
+Three independent checks run over the **whole** plan before the first step is signed
 or sent, so a plan never half-executes. Each refusal is a `validation` error with
 no sign and no actuate call.
 
@@ -182,9 +184,20 @@ no sign and no actuate call.
   read is `observe`'s job and `plan` never emits one. `i` is the first
   non-conforming step.
 
+- **Plan binding (M4a).** `execute` takes the `desired` and `observed` state the plan was
+  made from, derives the plan again, and requires the same operation and the same
+  provider operations in the same order; the three digests (`plan_digest`,
+  `target_digest`, `execution_digest`) to equal the ones computed from the request;
+  `config.data` to be the same JSON value as `desired.data`; and no retired `plan_id`.
+  A create (no observed state, no resource id) additionally needs a desired config the
+  kind's contract accepts: required fields present, no field a caller cannot set, no
+  gross type error.
+  The details are in `plan-digest.md`. This shows the request is internally consistent,
+  not that it was approved or that it has not run before.
+
 What these checks do **not** say: whether the id names the right resource, whether
-the plan was approved, or whether the caller may run it. Those are the plan-binding
-and Relay-authorization layers (status: concept).
+the plan was approved, whether the caller may run it, or whether it ran already. Those
+are the Relay-authorization layer (status: concept).
 
 ### What `poll` accepts
 

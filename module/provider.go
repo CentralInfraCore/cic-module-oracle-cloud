@@ -23,7 +23,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -334,10 +333,24 @@ type planRequest struct {
 	Kind     string        `json:"kind"`
 	Desired  schemaPayload `json:"desired"`
 	Observed schemaPayload `json:"observed"`
+	// Target is where the plan will run: host, base_path, key_id, resource_id and
+	// revision, as Execute will receive them in its binding. host and key_id are
+	// required; resource_id is required for an existing resource and empty for one
+	// to be created.
+	Target execBinding `json:"target"`
 }
 
 type executionPlan struct {
-	PlanID             string              `json:"plan_id"`   // sha256:... over the canonical plan inputs
+	// PlanDigest identifies everything the plan will execute: kind, contract, desired,
+	// observed, operation and the ordered provider operations. TargetDigest identifies
+	// where it runs. ExecutionDigest binds the two and is the value an approval names.
+	// All are sha256 over canonical JSON; see plan_binding.go.
+	PlanDigest      string `json:"plan_digest,omitempty"`
+	TargetDigest    string `json:"target_digest,omitempty"`
+	ExecutionDigest string `json:"execution_digest,omitempty"`
+	// PlanID is the retired identifier. Plan never emits it; it is declared only so that
+	// Execute can see a request that still carries one and refuse it.
+	PlanID             json.RawMessage     `json:"plan_id,omitempty"`
 	Operation          string              `json:"operation"` // create|update|replace|action|noop
 	ProviderOperations []providerOperation `json:"provider_operations,omitempty"`
 	Notes              []string            `json:"notes,omitempty"`
@@ -404,11 +417,11 @@ func planProviderOps(c resourceContract, op string, changed []string) []provider
 	return ops
 }
 
-// Plan produces an execution plan from desired + observed. This increment
-// computes the trivial, fully-decidable case — desired == observed → noop — with
-// a real, hashable plan_id. Any non-noop diff needs the OCI operation registry
-// (roadmap P2.3) to map fields to provider_operations, so it returns a typed
-// scaffold error rather than a fabricated plan. Pure, no mutation.
+// Plan produces an execution plan from desired, observed and the target it will run
+// on, and the three digests that identify it (plan_digest, target_digest,
+// execution_digest; plan_binding.go). Pure, no mutation. Execute repeats this very
+// derivation before it signs anything, so what Plan returns is also what Execute will
+// accept, and nothing else.
 func Plan(auth, data []byte) ([]byte, error) {
 	var req planRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -416,11 +429,25 @@ func Plan(auth, data []byte) ([]byte, error) {
 			Class: classValidation, Message: "plan-request is not valid JSON: " + err.Error(),
 		})
 	}
+	plan, perr := planFromRequest(req, "target")
+	if perr != nil {
+		return errResult(perr)
+	}
+	return okResult(plan)
+}
+
+// planFromRequest derives the plan and its digests. targetField names the target in a
+// refusal: "target" when Plan is called, "binding" when Execute re-derives.
+//
+// The lifecycle decides what the target must carry. A resource that does not exist yet
+// (observed is empty) has no resource_id and is created; an existing resource (observed
+// has state) needs a well-formed resource_id; any other combination is refused.
+func planFromRequest(req planRequest, targetField string) (executionPlan, *providerError) {
 	if envErrs := checkEnvelope("desired", req.Desired); len(envErrs) > 0 {
-		return errResult(&envErrs[0])
+		return executionPlan{}, &envErrs[0]
 	}
 	if envErrs := checkEnvelope("observed", req.Observed); len(envErrs) > 0 {
-		return errResult(&envErrs[0])
+		return executionPlan{}, &envErrs[0]
 	}
 	// Plan decides "noop" and which fields changed by comparing JSON values, so both
 	// payloads must be strict, bounded JSON with exact numbers and no repeated key
@@ -431,50 +458,77 @@ func Plan(auth, data []byte) ([]byte, error) {
 		data json.RawMessage
 	}{{"desired.data", req.Desired.Data}, {"observed.data", req.Observed.Data}} {
 		if _, err := canonicalJSON(pl.data); err != nil {
-			return errResult(&providerError{Class: classValidation, FieldPath: pl.name,
-				Message: pl.name + " is not canonicalizable JSON: " + err.Error()})
+			return executionPlan{}, &providerError{Class: classValidation, FieldPath: pl.name,
+				Message: pl.name + " is not canonicalizable JSON: " + err.Error()}
 		}
 	}
+	if pe := checkTarget(req.Kind, req.Target, targetField); pe != nil {
+		return executionPlan{}, pe
+	}
 
-	c, ok := resourceContracts()[req.Kind]
-	if !ok {
+	c, known := resourceContracts()[req.Kind]
+	if !known {
 		// No generated contract for this kind: only the no-op case is decidable.
 		if canonicalEqual(req.Desired.Data, req.Observed.Data) {
-			return okResult(noopPlan(req))
+			return finishPlan(req, executionPlan{
+				Operation: "noop",
+				Notes:     []string{"desired == observed; no provider operations"},
+			})
 		}
-		return errResult(&providerError{
+		return executionPlan{}, &providerError{
 			Class: classInternal, ProviderCode: "PLAN_CONTRACT_UNAVAILABLE", Retryable: false,
 			Message: "plan: no generated contract for kind " + req.Kind + "; only the no-op case is decidable.",
-		})
+		}
 	}
 
 	desired, err := decodeObject(req.Desired.Data)
 	if err != nil {
-		return errResult(&providerError{Class: classSchema, FieldPath: "desired.data", Message: err.Error()})
+		return executionPlan{}, &providerError{Class: classSchema, FieldPath: "desired.data", Message: err.Error()}
 	}
 	observed, err := decodeObject(req.Observed.Data)
 	if err != nil {
-		return errResult(&providerError{Class: classSchema, FieldPath: "observed.data", Message: err.Error()})
+		return executionPlan{}, &providerError{Class: classSchema, FieldPath: "observed.data", Message: err.Error()}
 	}
-	// Plan reconciles an already-observed, existing resource — it is not how
-	// a brand-new resource gets created. An empty observed (no fields at all)
-	// cannot be a real Observe() result: Observe() requires binding.resource_id
-	// and errors (class: not-found) on a 404 rather than returning empty state,
-	// so there is no legitimate caller path that produces this shape. Without
-	// this guard, every desired field reads as "changed" against the empty
-	// map, and a single create-only field among them escalates the plan to
-	// "replace" — emitting a Delete operation against a resource that was
-	// never created, with no real resource id to bind into its path
-	// (cic-module-oracle-cloud#31). A brand-new resource is created via a
-	// directly-constructed Execute(Create<Kind>) call instead (see
-	// docs/design/manual-verification.md's "execute (Create)" row) — Plan is
-	// never involved in that path, so this is a caller-error case, not a
-	// creation feature Plan lacks.
-	if len(observed) == 0 {
-		return errResult(&providerError{
-			Class: classValidation, FieldPath: "observed.data",
-			Message: "observed must be the state of an already-existing resource (from Observe()); Plan does not create new resources — call Execute directly with the create operation for that",
+
+	// Lifecycle. No observed state and no resource id: the resource does not exist
+	// yet, so the plan is its creation. Observed state without a resource id, or a
+	// resource id without observed state, describes no real resource and is refused
+	// (cic-module-oracle-cloud#31: an empty observed used to read as "everything
+	// changed" and could escalate to a replace that deleted a resource never created).
+	switch {
+	case len(observed) == 0 && req.Target.ResourceID == "":
+		// A create is planned from nothing but the desired config, so the plan
+		// must not exist for a config the kind's contract does not accept: a
+		// missing required field, a field the caller cannot set, a gross type
+		// error. (An update diffs against an existing resource and is judged
+		// by what changed; Validate is where a partial intent is reviewed.)
+		if errs := conformIntent(c, req.Desired); len(errs) > 0 {
+			// conformIntent walks a map: the refusal names the first error by field
+			// path, so the same request always gets the same answer.
+			sort.Slice(errs, func(i, j int) bool { return errs[i].FieldPath < errs[j].FieldPath })
+			pe := errs[0]
+			pe.FieldPath = "desired.data" + strings.TrimPrefix(pe.FieldPath, "intent.data")
+			return executionPlan{}, &pe
+		}
+		name, h, ok := c.opByRole(roleCreate)
+		if !ok {
+			return executionPlan{}, &providerError{Class: classInternal, Message: "no create operation for kind " + req.Kind}
+		}
+		return finishPlan(req, executionPlan{
+			Operation:          "create",
+			ProviderOperations: []providerOperation{{Operation: name, Method: h.method, Path: h.path, Reason: "the resource does not exist yet"}},
+			Notes:              []string{"create: no observed state and no resource id"},
 		})
+	case len(observed) == 0:
+		return executionPlan{}, &providerError{
+			Class: classValidation, FieldPath: "observed.data",
+			Message: "observed is empty but " + targetField + ".resource_id names a resource: observed must be the state of an already-existing resource (from Observe())",
+		}
+	case req.Target.ResourceID == "":
+		return executionPlan{}, &providerError{
+			Class: classValidation, FieldPath: targetField + ".resource_id",
+			Message: targetField + ".resource_id is required: observed describes an existing resource",
+		}
 	}
 
 	// Diff over the intent's declared fields. An absent desired field is
@@ -497,20 +551,23 @@ func Plan(auth, data []byte) ([]byte, error) {
 	}
 	sort.Strings(changed)
 
-	return okResult(executionPlan{
-		PlanID:             "sha256:" + planHash(req.Kind, req.Desired, req.Observed),
+	return finishPlan(req, executionPlan{
 		Operation:          op,
 		ProviderOperations: planProviderOps(c, op, changed),
 		Notes:              planNotes(op, changed),
 	})
 }
 
-func noopPlan(req planRequest) executionPlan {
-	return executionPlan{
-		PlanID:    "sha256:" + planHash(req.Kind, req.Desired, req.Observed),
-		Operation: "noop",
-		Notes:     []string{"desired == observed; no provider operations"},
+// finishPlan adds the three digests to a derived plan.
+func finishPlan(req planRequest, p executionPlan) (executionPlan, *providerError) {
+	env, err := planEnvelope(req.Kind, contractDigest(req.Kind), req.Desired, req.Observed, p.Operation, p.ProviderOperations)
+	if err != nil {
+		return executionPlan{}, &providerError{Class: classValidation, Message: "plan inputs cannot be digested: " + err.Error()}
 	}
+	p.PlanDigest = digestOf(env)
+	p.TargetDigest = digestOf(targetEnvelope(req.Kind, req.Target))
+	p.ExecutionDigest = digestOf(executionEnvelope(p.PlanDigest, p.TargetDigest))
+	return p, nil
 }
 
 func decodeObject(raw json.RawMessage) (map[string]json.RawMessage, error) {
@@ -561,19 +618,6 @@ func planNotes(op string, changed []string) []string {
 		return []string{"desired == observed; no provider operations"}
 	}
 	return []string{op + ": changed fields " + strings.Join(changed, ", ")}
-}
-
-// planHash is a deterministic hash over the plan inputs, so a plan is identifiable
-// and signable (provider-abi.md: plan_id is hashable).
-func planHash(kind string, desired, observed schemaPayload) string {
-	h := sha256.New()
-	h.Write([]byte(kind))
-	h.Write([]byte(desired.SchemaID))
-	h.Write([]byte(desired.SchemaHash))
-	h.Write([]byte(desired.Data))
-	h.Write([]byte(observed.SchemaHash))
-	h.Write([]byte(observed.Data))
-	return hex.EncodeToString(h.Sum(nil))
 }
 
 // canonicalEqual reports whether two JSON texts are the same value, by their
@@ -1045,10 +1089,15 @@ func effectiveConfig(c resourceContract, state map[string]json.RawMessage) map[s
 // ---- execute (implemented against the relay cic-flow host module, R1/R2) ----
 
 type executeRequest struct {
-	Kind    string        `json:"kind"`
-	Plan    executionPlan `json:"plan"`   // the approved plan (with provider_operations)
-	Config  schemaPayload `json:"config"` // desired config, to render request bodies
-	Binding execBinding   `json:"binding"`
+	Kind string        `json:"kind"`
+	Plan executionPlan `json:"plan"` // the plan, with its three digests
+	// Desired and Observed are the inputs the plan was derived from. Execute derives
+	// the plan from them again and requires it to match Plan, so the plan it runs is
+	// the one that follows from them.
+	Desired  schemaPayload `json:"desired"`
+	Observed schemaPayload `json:"observed"`
+	Config   schemaPayload `json:"config"` // must be the same JSON value as desired.data
+	Binding  execBinding   `json:"binding"`
 }
 
 // execBinding carries the provider coordinates the module needs to actuate: the
@@ -1072,6 +1121,9 @@ func opPath(b execBinding, rawPath string) string {
 type executionResult struct {
 	Status string          `json:"status"` // succeeded | failed
 	Steps  []executionStep `json:"steps"`
+	// ExecutionDigest echoes the digest of the plan and target that ran, so a receipt
+	// names exactly what was executed. Set by Execute only.
+	ExecutionDigest string `json:"execution_digest,omitempty"`
 }
 
 type executionStep struct {
@@ -1144,11 +1196,6 @@ func Execute(auth, data []byte) ([]byte, error) {
 	if !ok {
 		return errResult(&providerError{Class: classValidation, FieldPath: "kind", Message: "no contract for kind " + req.Kind})
 	}
-	config, err := decodeObject(req.Config.Data)
-	if err != nil {
-		return errResult(&providerError{Class: classSchema, FieldPath: "config.data", Message: err.Error()})
-	}
-
 	// binding.resource_id is spliced into the path of every step whose EXECUTED path
 	// has a placeholder (templatePath), and into every step the registry does not
 	// know as a create. The decision follows the path that will really be sent, not
@@ -1171,11 +1218,108 @@ func Execute(auth, data []byte) ([]byte, error) {
 		return errResult(pe)
 	}
 
+	// M4a: the plan, the desired and observed state it comes from, and the target it
+	// runs on must agree with each other and with the plan derived from them again.
+	derived, pe := checkPlanBinding(req)
+	if pe != nil {
+		return errResult(pe)
+	}
+	config, err := decodeObject(req.Desired.Data)
+	if err != nil {
+		return errResult(&providerError{Class: classSchema, FieldPath: "desired.data", Message: err.Error()})
+	}
+
+	result := executeSteps(c, req.Plan.ProviderOperations, config, req.Binding)
+	result.ExecutionDigest = derived.ExecutionDigest
+	return okResult(result)
+}
+
+// checkPlanBinding is the M4a gate. Before anything is signed it requires that the
+// request names no retired plan_id and carries all three digests and both payloads;
+// that the plan derived again from desired, observed and the target has the same
+// operation and the same provider operations in the same order as the plan received
+// (a derivation, not just a digest check: swapping an update for an M3-valid delete
+// is caught here); that the three digests match the ones computed here; and that the
+// config is the same JSON value as desired.data.
+//
+// A request that passes is internally consistent. That is all it shows: not that the
+// plan was approved, that the caller may run it, or that it has not run before.
+func checkPlanBinding(req executeRequest) (executionPlan, *providerError) {
+	missing := func(field string) *providerError {
+		return &providerError{Class: classValidation, FieldPath: field, Message: field + " is required"}
+	}
+	if len(req.Plan.PlanID) > 0 {
+		return executionPlan{}, &providerError{Class: classValidation, FieldPath: "plan.plan_id",
+			Message: "plan_id is retired: send plan_digest, target_digest and execution_digest"}
+	}
+	for _, d := range []struct{ field, value string }{
+		{"plan.plan_digest", req.Plan.PlanDigest},
+		{"plan.target_digest", req.Plan.TargetDigest},
+		{"plan.execution_digest", req.Plan.ExecutionDigest},
+	} {
+		if d.value == "" {
+			return executionPlan{}, missing(d.field)
+		}
+	}
+	// An absent payload decodes to an empty or JSON-null Data; neither is a payload.
+	if isAbsent(req.Desired.Data) {
+		return executionPlan{}, missing("desired.data")
+	}
+	if isAbsent(req.Observed.Data) {
+		return executionPlan{}, missing("observed.data")
+	}
+
+	derived, pe := planFromRequest(planRequest{
+		Kind: req.Kind, Desired: req.Desired, Observed: req.Observed, Target: req.Binding,
+	}, "binding")
+	if pe != nil {
+		return executionPlan{}, pe
+	}
+	if req.Plan.Operation != derived.Operation {
+		return executionPlan{}, &providerError{Class: classValidation, FieldPath: "plan.operation",
+			Message: "plan.operation is " + shortASCII(req.Plan.Operation) + ", the plan derived from desired and observed is " + derived.Operation}
+	}
+	got, want := req.Plan.ProviderOperations, derived.ProviderOperations
+	if len(got) != len(want) {
+		return executionPlan{}, &providerError{Class: classValidation, FieldPath: "plan.provider_operations",
+			Message: fmt.Sprintf("the plan has %d provider operations, the plan derived from desired and observed has %d", len(got), len(want))}
+	}
+	for i := range want {
+		if got[i].Operation != want[i].Operation || got[i].Method != want[i].Method || got[i].Path != want[i].Path {
+			return executionPlan{}, &providerError{Class: classValidation, FieldPath: fmt.Sprintf("plan.provider_operations[%d]", i),
+				Message: "this step differs from the plan derived from desired and observed (" + want[i].Operation + ")"}
+		}
+	}
+	for _, d := range []struct{ field, got, want string }{
+		{"plan.plan_digest", req.Plan.PlanDigest, derived.PlanDigest},
+		{"plan.target_digest", req.Plan.TargetDigest, derived.TargetDigest},
+		{"plan.execution_digest", req.Plan.ExecutionDigest, derived.ExecutionDigest},
+	} {
+		if d.got != d.want {
+			return executionPlan{}, &providerError{Class: classValidation, FieldPath: d.field,
+				Message: d.field + " does not match the digest computed from the request"}
+		}
+	}
+	if !canonicalEqual(req.Config.Data, req.Desired.Data) {
+		return executionPlan{}, &providerError{Class: classValidation, FieldPath: "config.data",
+			Message: "config.data is not the same JSON value as desired.data"}
+	}
+	return derived, nil
+}
+
+func isAbsent(raw json.RawMessage) bool {
+	return len(raw) == 0 || string(raw) == "null"
+}
+
+// executeSteps runs the provider operations in order and stops at the first failing
+// step. It assumes the plan has passed every gate in Execute; it decides nothing about
+// whether the plan may run.
+func executeSteps(c resourceContract, ops []providerOperation, config map[string]json.RawMessage, b execBinding) executionResult {
 	date := nowFunc().Format(ociTimeFormat)
 	result := executionResult{Status: "succeeded"}
 	async := false
-	for _, po := range req.Plan.ProviderOperations {
-		step, fatal := executeOne(c, po, config, req.Binding, date)
+	for _, po := range ops {
+		step, fatal := executeOne(c, po, config, b, date)
 		result.Steps = append(result.Steps, step)
 		if step.WorkRequestID != "" {
 			async = true
@@ -1190,7 +1334,7 @@ func Execute(auth, data []byte) ([]byte, error) {
 	if result.Status == "succeeded" && async {
 		result.Status = "accepted"
 	}
-	return okResult(result)
+	return result
 }
 
 // executeOne runs a single provider operation: render → sign → actuate. fatal is

@@ -173,35 +173,65 @@ func TestTheRefusalNamesTheFirstNonConformingStep(t *testing.T) {
 	wantPlanRefusal(t, res, mock, 1)
 }
 
-// An existing, valid plan keeps its result: every plannable operation of every kind,
-// run with exactly the registry's method and path, still executes once and sends the
-// request the registry describes.
-func TestExecuteStillRunsEveryRegistryOperationWithItsOwnMethodAndPath(t *testing.T) {
+// The registry check accepts every executable operation of every kind with its own
+// method and path (a read is refused, see the test above). This is the check alone;
+// which plans may run at all is the plan-binding gate's business (m4a_gate_test.go).
+func TestRegistryCheckAcceptsEveryExecutableOperationWithItsOwnMethodAndPath(t *testing.T) {
 	for _, kind := range sortedKinds() {
 		c := resourceContracts()[kind]
-		var names []string
-		for n, o := range c.operations {
-			if o.role != roleRead { // a read is refused by Execute (D-M3-1), see its own test
-				names = append(names, n)
+		for name, op := range c.operations {
+			if op.role == roleRead {
+				continue
+			}
+			if pe := checkPlanAgainstRegistry(c, []providerOperation{{Operation: name, Method: op.method, Path: op.path}}); pe != nil {
+				t.Errorf("%s/%s with its own method and path was refused: %+v", kind, name, pe)
 			}
 		}
-		sort.Strings(names)
-		for _, name := range names {
-			op := c.operations[name]
-			t.Run(kind+"/"+name, func(t *testing.T) {
-				reply := `{}`
-				if op.role == roleCreate {
-					reply = `{"id":"ocid1.` + kindType(kind) + `.oc1..created"}`
+	}
+}
+
+// Through Execute, every plan Plan can derive still runs, step by step, with exactly
+// the method and URL the registry describes.
+func TestExecuteStillRunsEveryDerivablePlanWithTheRegistrysMethodAndPath(t *testing.T) {
+	type derivable struct{ name, desired, observed string }
+	byKind := map[string][]derivable{
+		"cic:network:vcn": {
+			{"create", `{"compartmentId":"ocid1.compartment..c"}`, `{}`},
+			{"update", `{"displayName":"new"}`, `{"displayName":"old"}`},
+			{"action", `{"compartmentId":"ocid1.compartment..b"}`, `{"compartmentId":"ocid1.compartment..a"}`},
+			{"replace", `{"dnsLabel":"a"}`, `{"dnsLabel":"b"}`},
+		},
+		"cic:network:subnet": {
+			{"create", `{"compartmentId":"ocid1.compartment..c","vcnId":"ocid1.vcn..v"}`, `{}`},
+			{"update", `{"displayName":"new"}`, `{"displayName":"old"}`},
+			{"action", `{"compartmentId":"ocid1.compartment..b"}`, `{"compartmentId":"ocid1.compartment..a"}`},
+		},
+		"cic:compute:instance": {
+			{"create", `{"compartmentId":"ocid1.compartment..c","availabilityDomain":"AD-1"}`, `{}`},
+			{"update", `{"displayName":"new"}`, `{"displayName":"old"}`},
+			{"action", `{"compartmentId":"ocid1.compartment..b"}`, `{"compartmentId":"ocid1.compartment..a"}`},
+		},
+	}
+	for _, kind := range sortedKinds() {
+		cases := byKind[kind]
+		if len(cases) == 0 {
+			t.Fatalf("%s has no derivable-plan case: the test would skip a kind", kind)
+		}
+		c := resourceContracts()[kind]
+		for _, d := range cases {
+			t.Run(kind+"/"+d.name, func(t *testing.T) {
+				b := bindingWith("ocid1." + kindType(kind) + ".oc1..conformance")
+				if d.name == "create" {
+					b.ResourceID = ""
 				}
-				mock := &cicFlowMock{Reply: replyWith(200, reply, nil)}
+				req := m4aRequest(t, kind, d.desired, d.observed, b)
+				if len(req.Plan.ProviderOperations) == 0 {
+					t.Fatalf("test setup: Plan derived no operation (%s)", req.Plan.Operation)
+				}
+				mock := &cicFlowMock{Reply: replyWith(200, `{"id":"ocid1.`+kindType(kind)+`.oc1..created"}`, nil)}
 				restore := mock.wireHostSeam()
 				defer restore()
-				out, err := Execute(nil, marshalReq(t, executeRequest{
-					Kind:    kind,
-					Plan:    executionPlan{ProviderOperations: []providerOperation{{Operation: name, Method: op.method, Path: op.path}}},
-					Config:  schemaPayload{Data: json.RawMessage(`{"compartmentId":"ocid1.compartment..c"}`)},
-					Binding: bindingWith("ocid1." + kindType(kind) + ".oc1..conformance"),
-				}))
+				out, err := Execute(nil, marshalReq(t, req))
 				if err != nil {
 					t.Fatalf("Execute returned a Go error: %v", err)
 				}
@@ -209,16 +239,21 @@ func TestExecuteStillRunsEveryRegistryOperationWithItsOwnMethodAndPath(t *testin
 				if res.Status != "ok" {
 					t.Fatalf("status = %q, want ok (error: %+v)", res.Status, res.Error)
 				}
-				if mock.signCount() != 1 || mock.actuateCount() != 1 {
-					t.Fatalf("%d sign / %d actuate calls, want exactly 1 each", mock.signCount(), mock.actuateCount())
+				ops := req.Plan.ProviderOperations
+				if mock.signCount() != len(ops) || mock.actuateCount() != len(ops) {
+					t.Fatalf("%d sign / %d actuate calls, want %d each (one per step)", mock.signCount(), mock.actuateCount(), len(ops))
 				}
-				call := mock.lastActuate(t)
-				if call.Method != op.method {
-					t.Errorf("request method = %q, want the registry's %q", call.Method, op.method)
-				}
-				wantURL := "https://" + bindingHost + "/20160918" + templatePath(op.path, "ocid1."+kindType(kind)+".oc1..conformance")
-				if call.URL != wantURL {
-					t.Errorf("request URL = %q, want %q", call.URL, wantURL)
+				for i, po := range ops {
+					reg := c.operations[po.Operation]
+					call := mock.Actuated[i]
+					if call.Method != reg.method {
+						t.Errorf("step %d (%s): method = %q, want the registry's %q", i, po.Operation, call.Method, reg.method)
+					}
+					id := b.ResourceID
+					wantURL := "https://" + bindingHost + "/20160918" + templatePath(reg.path, id)
+					if call.URL != wantURL {
+						t.Errorf("step %d (%s): URL = %q, want %q", i, po.Operation, call.URL, wantURL)
+					}
 				}
 			})
 		}

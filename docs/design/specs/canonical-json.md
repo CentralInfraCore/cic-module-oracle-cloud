@@ -1,14 +1,14 @@
 # cic-canonical-json/1
 
 The one definition this module uses for "these two JSON texts are the same value".
-It decides whether a plan has any work to do (`plan`), and is the form a later digest
-of a plan will be computed over. Go implements it (`module/canonical_json.go`); the
+It decides whether a plan has any work to do (`plan`), and is the form the digests of a
+plan are computed over. Go implements it (`module/canonical_json.go`); the
 **normative expectations are the language-neutral vectors** in
 `module/testdata/canonical_json_vectors.json`, so another implementation can be
 checked against the same file.
 
-Status: `plan` uses it today (**implemented**). Digests over it (`plan_digest`,
-`target_digest`, `execution_digest`) are **concept** (not yet built).
+Status: **implemented**. `plan` decides with it, and the plan, target and execution
+digests are computed over it (`plan-digest.md`).
 
 ## Why not the standard library
 

@@ -336,6 +336,7 @@ func TestManualRealOCIPlan(t *testing.T) {
 			Kind:     kind,
 			Desired:  payloadFor(kind, desiredData),
 			Observed: observedPayload,
+			Target:   obsReq.Binding,
 		}
 		planReqJSON, _ := json.Marshal(planReq)
 		planResultJSON, err := Plan(nil, planReqJSON)
@@ -371,23 +372,30 @@ func ociHost(region string) string {
 	return fmt.Sprintf("iaas.%s.%s", region, domain)
 }
 
-// TestManualRealOCIExecute runs ONE approved provider_operation for real —
-// e.g. CreateVcn or UpdateVcn — against a live tenancy. Unlike Observe/
-// Validate/Plan, this MUTATES real OCI state: it creates, changes, or (via
-// Delete<Resource>) deletes whatever OCI_EXEC_OPERATION/METHOD/PATH describe.
-// Never run this without knowing exactly which tenancy/compartment/resource
-// it targets — see docs/design/manual-verification.md.
+// TestManualRealOCIExecute runs a plan for real — a create, an update or an action —
+// against a live tenancy. Unlike Observe/Validate/Plan, this MUTATES real OCI state.
+// Never run this without knowing exactly which tenancy/compartment/resource it
+// targets — see docs/design/manual-verification.md.
+//
+// Execute only runs a plan it can derive again from desired and observed state
+// (docs/design/specs/plan-digest.md), so this harness does what a caller does: it
+// takes the observed state (Observe, for an existing resource; none for a create),
+// asks Plan for the plan of the desired config on this target, and sends Plan's
+// answer to Execute. Which operations run is therefore decided by the difference
+// between the two states, not by operation/method/path variables.
 //
 // Config (env):
 //
-//	OCI_EXEC_OPERATION   e.g. CreateVcn, UpdateVcn, DeleteVcn (registry name)
-//	OCI_EXEC_METHOD      e.g. POST, PUT, DELETE
-//	OCI_EXEC_PATH        e.g. /vcns  or  /vcns/{vcnId} (resourceID fills {..})
-//	OCI_EXEC_CONFIG_JSON the config body fields as a JSON object (renderBody
-//	                     filters it per the op: Create keeps all contract
-//	                     fields present, Update keeps only "mutable" ones)
-//	OCI_TEST_RESOURCE_ID required for Update/Delete paths with a {param};
-//	                     leave unset for Create (the path has none to fill)
+//	OCI_EXEC_CONFIG_JSON the desired config as a JSON object (renderBody filters it
+//	                     per operation: a create keeps all contract fields present,
+//	                     an update keeps only "mutable" ones)
+//	OCI_TEST_RESOURCE_ID the existing resource to update; leave unset for a create
+//	OCI_EXEC_OPERATION   optional: the operation the plan is expected to START with
+//	                     (e.g. CreateVcn, UpdateVcn); the run is refused before
+//	                     Execute if Plan derives another first operation
+//
+// OCI_EXEC_METHOD and OCI_EXEC_PATH are no longer read: a plan cannot choose its own
+// method or path (they come from the registry). A lone Delete is Destroy's job.
 func TestManualRealOCIExecute(t *testing.T) {
 	if os.Getenv("REAL_OCI_TEST") == "" {
 		t.Skip("set REAL_OCI_TEST=1 to run against real OCI")
@@ -398,16 +406,14 @@ func TestManualRealOCIExecute(t *testing.T) {
 	user := os.Getenv("OCI_USER_OCID")
 	fingerprint := os.Getenv("OCI_FINGERPRINT")
 	region := os.Getenv("OCI_REGION")
-	resourceID := os.Getenv("OCI_TEST_RESOURCE_ID") // may be "" for Create
+	resourceID := os.Getenv("OCI_TEST_RESOURCE_ID") // "" for a create
 	kind := os.Getenv("OCI_TEST_KIND")
 	operation := os.Getenv("OCI_EXEC_OPERATION")
-	method := os.Getenv("OCI_EXEC_METHOD")
-	path := os.Getenv("OCI_EXEC_PATH")
 	configJSON := os.Getenv("OCI_EXEC_CONFIG_JSON")
 	if keyPath == "" || tenancy == "" || user == "" || fingerprint == "" || region == "" ||
-		kind == "" || operation == "" || method == "" || path == "" || configJSON == "" {
+		kind == "" || configJSON == "" {
 		t.Fatal("OCI_KEY_PATH, OCI_TENANCY_OCID, OCI_USER_OCID, OCI_FINGERPRINT, OCI_REGION, " +
-			"OCI_TEST_KIND, OCI_EXEC_OPERATION, OCI_EXEC_METHOD, OCI_EXEC_PATH, OCI_EXEC_CONFIG_JSON must all be set")
+			"OCI_TEST_KIND, OCI_EXEC_CONFIG_JSON must all be set")
 	}
 	if !json.Valid([]byte(configJSON)) {
 		t.Fatalf("OCI_EXEC_CONFIG_JSON is not valid JSON: %q", configJSON)
@@ -416,20 +422,64 @@ func TestManualRealOCIExecute(t *testing.T) {
 	rsaKey := loadRSAKey(t, keyPath)
 	wireRealHostCalls(rsaKey)
 
+	binding := execBinding{
+		Host:       ociHost(region),
+		BasePath:   "/20160918",
+		KeyID:      tenancy + "/" + user + "/" + fingerprint,
+		ResourceID: resourceID,
+	}
+
+	// The observed state: none for a create, Observe's answer for an existing resource.
+	observed := payloadFor(kind, json.RawMessage(`{}`))
+	if resourceID != "" {
+		obsJSON, _ := json.Marshal(observeRequest{Kind: kind, Binding: binding})
+		obsOut, err := Observe(nil, obsJSON)
+		if err != nil {
+			t.Fatalf("Observe returned Go error: %v", err)
+		}
+		var obs struct {
+			Status string `json:"status"`
+			Result struct {
+				EffectiveConfig  json.RawMessage `json:"effective_config"`
+				ProviderMetadata struct {
+					Etag string `json:"etag"`
+				} `json:"provider_metadata"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(obsOut, &obs); err != nil || obs.Status != "ok" {
+			t.Fatalf("observe failed: %s (err=%v)", obsOut, err)
+		}
+		observed = payloadFor(kind, obs.Result.EffectiveConfig)
+		if binding.Revision == "" {
+			binding.Revision = obs.Result.ProviderMetadata.Etag
+		}
+	}
+
+	desired := payloadFor(kind, json.RawMessage(configJSON))
+	planJSON, _ := json.Marshal(planRequest{Kind: kind, Desired: desired, Observed: observed, Target: binding})
+	planOut, err := Plan(nil, planJSON)
+	if err != nil {
+		t.Fatalf("Plan returned Go error: %v", err)
+	}
+	var planned struct {
+		Status string        `json:"status"`
+		Result executionPlan `json:"result"`
+	}
+	if err := json.Unmarshal(planOut, &planned); err != nil || planned.Status != "ok" {
+		t.Fatalf("plan failed: %s (err=%v)", planOut, err)
+	}
+	fmt.Printf("=== Plan (%s) ===\n%s\n", planned.Result.Operation, planOut)
+	if operation != "" && (len(planned.Result.ProviderOperations) == 0 || planned.Result.ProviderOperations[0].Operation != operation) {
+		t.Fatalf("Plan derived %+v, the run expects it to start with %s: refusing to execute", planned.Result.ProviderOperations, operation)
+	}
+
 	execReq := executeRequest{
-		Kind: kind,
-		Plan: executionPlan{
-			ProviderOperations: []providerOperation{
-				{Operation: operation, Method: method, Path: path},
-			},
-		},
-		Config: payloadFor(kind, json.RawMessage(configJSON)),
-		Binding: execBinding{
-			Host:       ociHost(region),
-			BasePath:   "/20160918",
-			KeyID:      tenancy + "/" + user + "/" + fingerprint,
-			ResourceID: resourceID,
-		},
+		Kind:     kind,
+		Plan:     planned.Result,
+		Desired:  desired,
+		Observed: observed,
+		Config:   desired,
+		Binding:  binding,
 	}
 	execReqJSON, _ := json.Marshal(execReq)
 
@@ -437,7 +487,7 @@ func TestManualRealOCIExecute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute returned Go error: %v", err)
 	}
-	fmt.Printf("=== Execute result (%s) ===\n%s\n", operation, resultJSON)
+	fmt.Printf("=== Execute result (%s) ===\n%s\n", planned.Result.Operation, resultJSON)
 
 	var wrapper struct {
 		Status string          `json:"status"`
