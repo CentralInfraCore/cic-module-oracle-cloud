@@ -681,6 +681,9 @@ func Invoke(auth, data []byte) ([]byte, error) {
 	if req.Binding.Host == "" || req.Binding.KeyID == "" || req.Binding.ResourceID == "" {
 		return errResult(&providerError{Class: classValidation, FieldPath: "binding", Message: "binding.host, binding.key_id and binding.resource_id are required"})
 	}
+	if pe := validateBindingResourceID(req.Kind, req.Binding.ResourceID); pe != nil {
+		return errResult(pe)
+	}
 	op, ok := c.operations[req.Operation]
 	if !ok {
 		return errResult(&providerError{Class: classValidation, FieldPath: "operation", Message: "unknown operation for kind: " + req.Operation})
@@ -782,6 +785,29 @@ func isTerminalWorkStatus(s string) bool {
 	}
 }
 
+// validateBindingResourceID is the first layer of the binding contract: the id a
+// caller supplies in binding.resource_id is spliced into a SIGNED request path, so
+// it must be a well-formed OCID of the kind's type, decided before anything is
+// signed or sent. It says nothing about whether the id is the right resource or
+// whether the caller may act on it: those are other layers.
+func validateBindingResourceID(kind, id string) *providerError {
+	if wellFormedOCID(kind, id) {
+		return nil
+	}
+	shown := id
+	if len(shown) > 40 {
+		shown = shown[:40] + "..."
+	}
+	shown = strings.Map(func(r rune) rune {
+		if r < 0x20 || r > 0x7e {
+			return '?'
+		}
+		return r
+	}, shown)
+	return &providerError{Class: classValidation, FieldPath: "binding.resource_id",
+		Message: "binding.resource_id is not a well-formed OCID of the type for " + kind + " (got \"" + shown + "\")"}
+}
+
 // resolveOp looks up a resource's lifecycle operation by role (read/create/
 // update/delete — see roleRead etc.) and validates the binding — shared by the
 // CRUD ops. Returns the operation's actual registry name (LaunchInstance,
@@ -793,6 +819,9 @@ func resolveOp(kind, role string, b execBinding) (string, httpOp, *providerError
 	}
 	if b.Host == "" || b.KeyID == "" || b.ResourceID == "" {
 		return "", httpOp{}, &providerError{Class: classValidation, FieldPath: "binding", Message: "binding.host, binding.key_id and binding.resource_id are required"}
+	}
+	if pe := validateBindingResourceID(kind, b.ResourceID); pe != nil {
+		return "", httpOp{}, pe
 	}
 	name, op, ok := c.opByRole(role)
 	if !ok {
@@ -837,6 +866,9 @@ func Observe(auth, data []byte) ([]byte, error) {
 	c, ok := resourceContracts()[req.Kind]
 	if !ok {
 		return errResult(&providerError{Class: classValidation, FieldPath: "kind", Message: "no contract for kind " + req.Kind})
+	}
+	if pe := validateBindingResourceID(req.Kind, req.Binding.ResourceID); pe != nil {
+		return errResult(pe)
 	}
 	_, getOp, ok := c.opByRole(roleRead)
 	if !ok {
@@ -992,6 +1024,18 @@ func Execute(auth, data []byte) ([]byte, error) {
 	config, err := decodeObject(req.Config.Data)
 	if err != nil {
 		return errResult(&providerError{Class: classSchema, FieldPath: "config.data", Message: err.Error()})
+	}
+
+	// A step other than a create splices binding.resource_id into its path. Decide
+	// that once, before any step runs, so a plan never half-executes on a bad id.
+	// An operation the registry does not know counts as non-create.
+	for _, po := range req.Plan.ProviderOperations {
+		if c.operations[po.Operation].role != roleCreate {
+			if pe := validateBindingResourceID(req.Kind, req.Binding.ResourceID); pe != nil {
+				return errResult(pe)
+			}
+			break
+		}
 	}
 
 	date := nowFunc().Format(ociTimeFormat)
