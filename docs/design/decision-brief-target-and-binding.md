@@ -38,8 +38,8 @@ authority, single use, or where the target came from.
 
 ## 2. Layer A: architecture decisions
 
-These decide what the realization context is and where it lives. Nothing below them can be settled until
-A1 is.
+These decide what the realization context is and where it lives. The other decisions in this layer (A2 to A7)
+cannot be settled until A1 is; the module-only steps of section 4 do not wait for it.
 
 | ID | Decision | Code | Recommendation |
 |---|---|---|---|
@@ -48,7 +48,7 @@ A1 is.
 | A3 (Q2) | Granularity: one context per environment shared by many objects (object binding kept in the state), or one per object | [O] | per environment with the object binding in the state, since the state model already separates the logical identity (`uid`) from the provider identity (`provider_id`) |
 | A4 (Q3) | Who issues and signs a context, and what authenticates it | [O][J] | the layer that realizes the object issues it; its authenticator reaches the module through the Relay's authenticated execution context (R6) |
 | A5 (Q5) | Routing and decomposition: how one intent spanning providers or regions becomes several realizations | [O][J] | defer: the data path calls it concept, and no first slice needs it |
-| A6 (Q6) | Lifecycle: rotation and revocation of the execution identity binding; an approved but unexecuted plan whose context changed | [O] | an approval names `execution_digest`, which commits to the target, so a changed context yields a different digest and the old approval does not match (R7); rotation and revocation policy is still the owner's |
+| A6 (Q6) | Lifecycle: rotation and revocation of the execution identity binding; an approved but unexecuted plan whose context changed | [O] | an approval names `execution_digest`, which commits to the target, but the current `execution_digest` does not commit to a realization context: `target_digest` binds only `host`, `base_path`, `key_id`, `kind`, `resource_id` and `revision` (`module/plan_binding.go`, `targetEnvelope`). A changed realization context does not necessarily change it, and an unchanged `key_id` does not show that the authority behind it is unchanged. The context identity or digest, its validity and its authorization binding must be part of the approval's verified execution context; whether that extends `execution_digest` or is a separate approval binding stays an open architectural decision (R7); rotation and revocation policy is still the owner's |
 | A7 (D5-7) | A distinct name for the realization environment, so it is not confused with the engine's "environment" (the processing layer) | [O] | decide first: it is cheap and every later document uses the word |
 
 ## 3. Layer B: contract decisions, by boundary
@@ -79,7 +79,8 @@ A1 is.
 
 Only if **A1** is (i): reconsidering the object's schema and boundary, and checking whether the existing
 closed receipt can represent the derivation of context-derived values without an extension. If A1 is (ii)
-these two have no change.
+the context lives outside the object, so these two do not automatically need a contract change; the
+concrete integration requirements are still to be checked separately.
 
 ## 4. Layer C: order of implementation
 
