@@ -790,20 +790,55 @@ func isTerminalWorkStatus(s string) bool {
 // it must be a well-formed OCID of the kind's type, decided before anything is
 // signed or sent. It says nothing about whether the id is the right resource or
 // whether the caller may act on it: those are other layers.
-func validateBindingResourceID(kind, id string) *providerError {
-	if wellFormedOCID(kind, id) {
-		return nil
+// shortASCII returns s cut to 40 bytes with every control or non-ASCII byte shown
+// as "?", so a caller-supplied string can be quoted in an error as one short line.
+func shortASCII(s string) string {
+	if len(s) > 40 {
+		s = s[:40] + "..."
 	}
-	shown := id
-	if len(shown) > 40 {
-		shown = shown[:40] + "..."
-	}
-	shown = strings.Map(func(r rune) rune {
+	return strings.Map(func(r rune) rune {
 		if r < 0x20 || r > 0x7e {
 			return '?'
 		}
 		return r
-	}, shown)
+	}, s)
+}
+
+// checkPlanAgainstRegistry is the second layer of the execution boundary (M3): a
+// plan step runs only if the registry of the kind defines its operation, with
+// exactly the registry's HTTP method and path template. The plan can name an
+// operation; it cannot invent one or override what the registry says it is. The
+// comparison is exact (case, placeholder name, trailing slash): Plan itself copies
+// method and path from the registry, so any difference is not a plan Plan made.
+// A read-role operation is refused too (D-M3-1): it belongs to observe.
+// The whole plan is checked here, before the first step is signed or sent.
+func checkPlanAgainstRegistry(c resourceContract, ops []providerOperation) *providerError {
+	for i, po := range ops {
+		field := fmt.Sprintf("plan.provider_operations[%d]", i)
+		reg, ok := c.operations[po.Operation]
+		if !ok {
+			return &providerError{Class: classValidation, FieldPath: field,
+				Message: "operation " + shortASCII(po.Operation) + " is not defined for " + c.kind}
+		}
+		// A read is Observe's job, not a plan step: Plan never emits one, and Execute
+		// does not run one even when it matches the registry exactly (D-M3-1).
+		if reg.role == roleRead {
+			return &providerError{Class: classValidation, FieldPath: field,
+				Message: "operation " + po.Operation + " is a read, not an executable plan step: use observe"}
+		}
+		if po.Method != reg.method || po.Path != reg.path {
+			return &providerError{Class: classValidation, FieldPath: field,
+				Message: "method or path of " + po.Operation + " differs from the registry (" + reg.method + " " + reg.path + ")"}
+		}
+	}
+	return nil
+}
+
+func validateBindingResourceID(kind, id string) *providerError {
+	if wellFormedOCID(kind, id) {
+		return nil
+	}
+	shown := shortASCII(id)
 	return &providerError{Class: classValidation, FieldPath: "binding.resource_id",
 		Message: "binding.resource_id is not a well-formed OCID of the type for " + kind + " (got \"" + shown + "\")"}
 }
@@ -1039,6 +1074,13 @@ func Execute(auth, data []byte) ([]byte, error) {
 			}
 			break
 		}
+	}
+
+	// M3, independent of the M1 id check above: every step must be an operation of
+	// this kind's registry with exactly the registry's method and path. Decided for
+	// the whole plan before any step runs.
+	if pe := checkPlanAgainstRegistry(c, req.Plan.ProviderOperations); pe != nil {
+		return errResult(pe)
 	}
 
 	date := nowFunc().Format(ociTimeFormat)

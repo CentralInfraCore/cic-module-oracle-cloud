@@ -151,6 +151,33 @@ execution-result:                 # as implemented
   no id should end as `accepted` with the id still pending, and what `poll` would
   have to return to deliver the created resource's identifier.
 
+### What `execute` accepts before it sends anything
+
+Two independent checks run over the **whole** plan before the first step is signed
+or sent, so a plan never half-executes. Each refusal is a `validation` error with
+no sign and no actuate call.
+
+- **Resource id (M1, `binding.resource_id`).** A step that splices the id into its
+  path, or whose operation the registry does not know as a create, requires
+  `binding.resource_id` to be a well-formed OCID of the kind's type
+  (`field_path: binding.resource_id`). The decision follows the executed path (a
+  placeholder in it), not only the role of the operation name. A plan of create
+  steps with plain paths does not need the id. `observe`, `invoke` and `destroy`
+  apply the same rule. `poll` is not covered: its path carries a Work Request id and
+  has its own contract (status: concept).
+- **Registry conformance (M3, `field_path: plan.provider_operations[i]`).** Every
+  step must name an operation the kind's registry defines, and its `method` and
+  `path` must equal the registry's exactly (case, placeholder name, trailing slash;
+  an empty method or path is a mismatch). The plan can name an operation; it cannot
+  invent one or override what the registry says it is. A `read`-role operation
+  (for example `GetVcn`) is refused as a step even when it matches the registry: a
+  read is `observe`'s job and `plan` never emits one. `i` is the first
+  non-conforming step.
+
+What these checks do **not** say: whether the id names the right resource, whether
+the plan was approved, or whether the caller may run it. Those are the plan-binding
+and Relay-authorization layers (status: concept).
+
 ## Error model
 
 ```yaml
