@@ -31,6 +31,9 @@ namespace it opens. Written 2026-07-18 from the design session recorded in
   computed over.
 - [specs/plan-digest.md](specs/plan-digest.md) — `plan_digest`, `target_digest`,
   `execution_digest` and the gate `execute` applies before it signs anything.
+- [decision-brief-target-and-binding.md](decision-brief-target-and-binding.md) — one place for the open
+  decisions on target data and execution binding (architecture, contracts, order of implementation),
+  with the dependencies between them; it decides nothing.
 - [specs/realization-context.md](specs/realization-context.md) — D5-2: a survey of what is written
   and what is in code about the realization context that target data should be derived from,
   where the chain breaks, and a proposal (concept).
