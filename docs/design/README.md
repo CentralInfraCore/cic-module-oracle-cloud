@@ -31,6 +31,9 @@ namespace it opens. Written 2026-07-18 from the design session recorded in
   computed over.
 - [specs/plan-digest.md](specs/plan-digest.md) — `plan_digest`, `target_digest`,
   `execution_digest` and the gate `execute` applies before it signs anything.
+- [specs/realization-context.md](specs/realization-context.md) — D5-2: a survey of what is written
+  and what is in code about the realization context that target data should be derived from,
+  where the chain breaks, and a proposal (concept).
 - [specs/target-origin-and-path-safety.md](specs/target-origin-and-path-safety.md) — D5: a
   measurement of what the module does with a caller-given `host` and `base_path`, and a
   proposal (concept) for where target data should come from; probes and output in
