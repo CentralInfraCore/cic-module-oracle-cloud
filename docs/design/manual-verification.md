@@ -196,14 +196,19 @@ running this against anything but an empty/disposable tenancy):
 
 ```bash
 # ... same OCI_KEY_PATH/OCI_TENANCY_OCID/OCI_USER_OCID/OCI_FINGERPRINT/OCI_REGION/OCI_TEST_KIND as above, plus:
-OCI_EXEC_OPERATION=CreateVcn OCI_EXEC_METHOD=POST OCI_EXEC_PATH=/vcns \
+OCI_EXEC_OPERATION=CreateVcn \
 OCI_EXEC_CONFIG_JSON='{"compartmentId":"...","displayName":"...","cidrBlock":"10.0.0.0/16"}' \
 REAL_OCI_TEST=1 go test -tags manual_real_oci -count=1 -run TestManualRealOCIExecute -v ./module/
 ```
 
-Omit `OCI_TEST_RESOURCE_ID` for `Create*` (the path has no `{param}` to fill);
-set it for `Update*`/`Delete*` (`OCI_EXEC_PATH=/vcns/{vcnId}`, etc.). The
-harness has no "list" capability of its own (the module ABI operates on one
+Omit `OCI_TEST_RESOURCE_ID` for a create (the plan then has no resource to name);
+set it to update an existing resource. Since the M4a plan binding (`docs/design/specs/plan-digest.md`)
+the harness no longer takes `OCI_EXEC_METHOD`/`OCI_EXEC_PATH`: `Execute` only runs a plan it
+can derive again from desired and observed state, so the harness observes the resource
+(none for a create), asks `Plan` for the plan of `OCI_EXEC_CONFIG_JSON` on that target and
+sends `Plan`'s answer to `Execute`. `OCI_EXEC_OPERATION` is an optional check that the plan
+starts with that operation. A lone delete is `Destroy`'s job, not `Execute`'s. This rewritten
+harness has not been run against real OCI (it compiles under its build tag). The harness has no "list" capability of its own (the module ABI operates on one
 resource_id at a time) — after a `Create`, find the new resource's OCID with
 the `oci` CLI (e.g. `oci network vcn list --query "...displayName=='...'"`)
 to feed into the next `Observe`/`Update`/`Destroy` call.

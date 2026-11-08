@@ -52,12 +52,7 @@ func execStepThroughWasm(t *testing.T, mock *cicFlowMock, po providerOperation, 
 	t.Helper()
 	ctx, instance, callFn, allocateFn, deallocateFn := loadGuestWithCicFlow(t, mock)
 
-	reqJSON, _ := json.Marshal(executeRequest{
-		Kind:    "cic:network:vcn",
-		Plan:    executionPlan{Operation: "create", ProviderOperations: []providerOperation{po}},
-		Config:  schemaPayload{SchemaID: "cic:network:vcn-config", Encoding: encCanonicalJSON, Data: json.RawMessage(configJSON)},
-		Binding: binding,
-	})
+	reqJSON, _ := json.Marshal(m4aForOp(t, "cic:network:vcn", po, configJSON, binding))
 	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "execute", "{}", string(reqJSON))
 	if string(env.Error) != "null" {
 		t.Fatalf("execute transport error = %s, want null", env.Error)

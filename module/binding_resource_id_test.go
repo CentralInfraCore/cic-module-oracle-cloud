@@ -61,12 +61,18 @@ var bindingOps = []struct {
 		return Destroy(nil, marshalReq(t, destroyRequest{Kind: bindingKind, Binding: bindingWith(id)}))
 	}},
 	{"Execute (update step)", func(t *testing.T, id string) ([]byte, error) {
-		return Execute(nil, marshalReq(t, executeRequest{
-			Kind:    bindingKind,
-			Plan:    executionPlan{ProviderOperations: []providerOperation{updateVcnOp}},
-			Config:  schemaPayload{Data: json.RawMessage(`{"displayName":"prod"}`)},
-			Binding: bindingWith(id),
-		}))
+		// A consistent M4a request for a well-formed id; for a bad one, the same
+		// request with the id replaced by hand, so the id check is what refuses it.
+		build := func(id string) executeRequest {
+			return m4aForOp(t, bindingKind, updateVcnOp, `{"displayName":"prod"}`, bindingWith(id))
+		}
+		req := build("ocid1.vcn.oc1..base")
+		if wellFormedOCID(bindingKind, id) {
+			req = build(id)
+		} else {
+			req.Binding.ResourceID = id
+		}
+		return Execute(nil, marshalReq(t, req))
 	}},
 }
 
@@ -190,28 +196,45 @@ func TestAMixedPlanWithABadBindingIDRunsNoStep(t *testing.T) {
 	}
 }
 
-// A create has no id to splice (its path is /vcns), so a plan with only create steps
-// must keep working whatever the binding carries in resource_id.
-func TestACreateOnlyPlanIgnoresTheBindingResourceID(t *testing.T) {
-	for _, id := range []string{"", "not-an-ocid"} {
-		t.Run("binding id "+id, func(t *testing.T) {
+// A create has no id to splice (its path is /vcns), so the M1 id check does not ask
+// for one, and a create with no resource id runs. A create that names a resource id
+// is not a create at all: the plan's lifecycle (M4a) refuses it, because a resource
+// that does not exist yet has no id. M1 alone would ignore it; the refusal is M4a's.
+func TestACreateRunsWithoutAResourceIDAndIsRefusedWithOne(t *testing.T) {
+	create := providerOperation{Operation: "CreateVcn", Method: "POST", Path: "/vcns"}
+	t.Run("no resource id", func(t *testing.T) {
+		mock := &cicFlowMock{Reply: replyWith(200, `{"id":"ocid1.vcn.oc1..created"}`, nil)}
+		restore := mock.wireHostSeam()
+		defer restore()
+		req := m4aForOp(t, bindingKind, create, `{"compartmentId":"ocid1.compartment..c"}`, bindingWith(""))
+		out, err := Execute(nil, marshalReq(t, req))
+		if err != nil {
+			t.Fatalf("Execute returned a Go error: %v", err)
+		}
+		if res := decodeResult(t, out); res.Status != "ok" {
+			t.Fatalf("status = %q, want ok (error: %+v)", res.Status, res.Error)
+		}
+		if mock.actuateCount() != 1 {
+			t.Errorf("%d provider requests, want exactly 1", mock.actuateCount())
+		}
+	})
+	for _, id := range []string{"not-an-ocid", "ocid1.vcn.oc1..existing"} {
+		t.Run("resource id "+id, func(t *testing.T) {
 			mock := &cicFlowMock{Reply: replyWith(200, `{"id":"ocid1.vcn.oc1..created"}`, nil)}
 			restore := mock.wireHostSeam()
 			defer restore()
-			out, err := Execute(nil, marshalReq(t, executeRequest{
-				Kind:    bindingKind,
-				Plan:    executionPlan{ProviderOperations: []providerOperation{{Operation: "CreateVcn", Method: "POST", Path: "/vcns"}}},
-				Config:  schemaPayload{Data: json.RawMessage(`{"compartmentId":"ocid1.compartment..c"}`)},
-				Binding: bindingWith(id),
-			}))
+			req := m4aForOp(t, bindingKind, create, `{"compartmentId":"ocid1.compartment..c"}`, bindingWith(""))
+			req.Binding.ResourceID = id // changed by hand after the plan was built
+			out, err := Execute(nil, marshalReq(t, req))
 			if err != nil {
 				t.Fatalf("Execute returned a Go error: %v", err)
 			}
-			if res := decodeResult(t, out); res.Status != "ok" {
-				t.Fatalf("status = %q, want ok: a create must not depend on binding.resource_id (error: %+v)", res.Status, res.Error)
+			res := decodeResult(t, out)
+			if res.Status != "error" || res.Error == nil || res.Error.Class != classValidation {
+				t.Fatalf("status %q error %+v, want a validation error", res.Status, res.Error)
 			}
-			if mock.actuateCount() != 1 {
-				t.Errorf("%d provider requests, want exactly 1", mock.actuateCount())
+			if mock.signCount() != 0 || mock.actuateCount() != 0 {
+				t.Errorf("%d sign / %d actuate calls, want none", mock.signCount(), mock.actuateCount())
 			}
 		})
 	}
@@ -262,24 +285,5 @@ func TestACreateNamedStepWhosePathSplicesTheIDIsRefusedOnABadID(t *testing.T) {
 				t.Errorf("%d sign / %d actuate calls, want none", mock.signCount(), mock.actuateCount())
 			}
 		})
-	}
-}
-
-// A create-named step whose path has no placeholder still does not need the id.
-func TestACreateNamedStepWithAPlainPathStillIgnoresTheID(t *testing.T) {
-	mock := &cicFlowMock{Reply: replyWith(200, `{"id":"ocid1.vcn.oc1..created"}`, nil)}
-	restore := mock.wireHostSeam()
-	defer restore()
-	out, err := Execute(nil, marshalReq(t, executeRequest{
-		Kind:    bindingKind,
-		Plan:    executionPlan{ProviderOperations: []providerOperation{{Operation: "CreateVcn", Method: "POST", Path: "/vcns"}}},
-		Config:  schemaPayload{Data: json.RawMessage(`{"compartmentId":"ocid1.compartment..c"}`)},
-		Binding: bindingWith("not-an-ocid"),
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res := decodeResult(t, out); res.Status != "ok" {
-		t.Fatalf("status %q, want ok (error: %+v)", res.Status, res.Error)
 	}
 }

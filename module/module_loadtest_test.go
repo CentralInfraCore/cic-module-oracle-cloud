@@ -359,15 +359,10 @@ func TestHostLoadExecute(t *testing.T) {
 	ctx, instance, callFn, allocateFn, deallocateFn := loadGuestWithCicFlow(t, mock)
 
 	// An approved plan (as `plan` would emit) + desired config + binding.
-	exReq := executeRequest{
-		Kind: "cic:network:vcn",
-		Plan: executionPlan{
-			Operation:          "update",
-			ProviderOperations: []providerOperation{{Operation: "UpdateVcn", Method: "PUT", Path: "/vcns/{vcnId}"}},
-		},
-		Config:  schemaPayload{SchemaID: "cic:network:vcn-config", Encoding: encCanonicalJSON, Data: json.RawMessage(`{"displayName":"prod-vcn"}`)},
-		Binding: execBinding{Host: "iaas.eu-frankfurt-1.oraclecloud.com", KeyID: "tenancy/user/fp", ResourceID: "ocid1.vcn.oc1..xyz"},
-	}
+	exReq := m4aForOp(t, "cic:network:vcn",
+		providerOperation{Operation: "UpdateVcn", Method: "PUT", Path: "/vcns/{vcnId}"},
+		`{"displayName":"prod-vcn"}`,
+		execBinding{Host: "iaas.eu-frankfurt-1.oraclecloud.com", KeyID: "tenancy/user/fp", ResourceID: "ocid1.vcn.oc1..xyz"})
 	reqJSON, _ := json.Marshal(exReq)
 	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "execute", "{}", string(reqJSON))
 

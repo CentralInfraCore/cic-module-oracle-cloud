@@ -120,15 +120,10 @@ func TestRelayIntegrationExecuteSigned(t *testing.T) {
 
 	ctx, instance, callFn, allocateFn, deallocateFn := loadWithCICFlow(t, wasmBytes, sign, actuate)
 
-	exReq, _ := json.Marshal(executeRequest{
-		Kind: "cic:network:vcn",
-		Plan: executionPlan{
-			Operation:          "update",
-			ProviderOperations: []providerOperation{{Operation: "UpdateVcn", Method: "PUT", Path: "/vcns/{vcnId}"}},
-		},
-		Config:  schemaPayload{Encoding: encCanonicalJSON, Data: json.RawMessage(`{"displayName":"prod-vcn"}`)},
-		Binding: execBinding{Host: host, KeyID: "tenancy/user/fp", ResourceID: "ocid1.vcn..z"},
-	})
+	exReq, _ := json.Marshal(m4aForOp(t, "cic:network:vcn",
+		providerOperation{Operation: "UpdateVcn", Method: "PUT", Path: "/vcns/{vcnId}"},
+		`{"displayName":"prod-vcn"}`,
+		execBinding{Host: host, KeyID: "tenancy/user/fp", ResourceID: "ocid1.vcn..z"}))
 	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "execute", "{}", string(exReq))
 
 	if string(env.Error) != "null" {
@@ -211,12 +206,10 @@ func TestRelayIntegrationRejectsBadSignature(t *testing.T) {
 	}
 
 	ctx, instance, callFn, allocateFn, deallocateFn := loadWithCICFlow(t, wasmBytes, sign, actuate)
-	exReq, _ := json.Marshal(executeRequest{
-		Kind:    "cic:network:vcn",
-		Plan:    executionPlan{Operation: "update", ProviderOperations: []providerOperation{{Operation: "UpdateVcn", Method: "PUT", Path: "/vcns/{vcnId}"}}},
-		Config:  schemaPayload{Encoding: encCanonicalJSON, Data: json.RawMessage(`{"displayName":"x"}`)},
-		Binding: execBinding{Host: strings.TrimPrefix(srv.URL, "https://"), KeyID: "t/u/f", ResourceID: "ocid1.vcn..z"},
-	})
+	exReq, _ := json.Marshal(m4aForOp(t, "cic:network:vcn",
+		providerOperation{Operation: "UpdateVcn", Method: "PUT", Path: "/vcns/{vcnId}"},
+		`{"displayName":"x"}`,
+		execBinding{Host: strings.TrimPrefix(srv.URL, "https://"), KeyID: "t/u/f", ResourceID: "ocid1.vcn..z"}))
 	env := callOp(t, ctx, instance, callFn, allocateFn, deallocateFn, "execute", "{}", string(exReq))
 
 	var res struct {

@@ -95,15 +95,18 @@ func TestExecuteNonCreateOutputBytesUnchanged(t *testing.T) {
 			restore := mock.wireHostSeam()
 			defer restore()
 
-			req, _ := json.Marshal(executeRequest{
-				Kind:    "cic:network:vcn",
-				Plan:    executionPlan{ProviderOperations: []providerOperation{tc.po}},
-				Config:  schemaPayload{Data: json.RawMessage(tc.config)},
-				Binding: execBinding{Host: "h", BasePath: "/20160918", KeyID: "k", ResourceID: "ocid1.vcn..z", Revision: "etag-42"},
-			})
-			out, err := Execute(nil, req)
+			// The step mapping is checked on the steps themselves (executeSteps), so a
+			// single DeleteVcn or ChangeVcnCompartment step can be exercised on its own;
+			// whether a plan may run at all is the gate's business (m4a_gate_test.go),
+			// and TestExecuteOutputOnlyAddsTheExecutionDigest ties the two together.
+			config, err := decodeObject(json.RawMessage(tc.config))
 			if err != nil {
-				t.Fatalf("Execute returned a Go error: %v", err)
+				t.Fatalf("config: %v", err)
+			}
+			out, err := okResult(executeSteps(resourceContracts()["cic:network:vcn"], []providerOperation{tc.po}, config,
+				execBinding{Host: "h", BasePath: "/20160918", KeyID: "k", ResourceID: "ocid1.vcn..z", Revision: "etag-42"}))
+			if err != nil {
+				t.Fatalf("okResult returned a Go error: %v", err)
 			}
 			if string(out) != tc.want {
 				t.Errorf("Execute output changed for a non-create operation.\n got: %s\nwant: %s", out, tc.want)

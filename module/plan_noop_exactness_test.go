@@ -19,6 +19,7 @@ func planInstance(t *testing.T, desired, observed string) (providerResult, execu
 		Kind:     instanceKind,
 		Desired:  schemaPayload{SchemaID: "cic:compute:instance-config", SchemaVersion: "v0.1.0", SchemaHash: "abc123", Encoding: encCanonicalJSON, Data: json.RawMessage(desired)},
 		Observed: schemaPayload{SchemaID: "cic:compute:instance-state", SchemaVersion: "v0.1.0", SchemaHash: "abc124", Encoding: encCanonicalJSON, Data: json.RawMessage(observed)},
+		Target:   execBinding{Host: "h", KeyID: "k", ResourceID: "ocid1.instance..t"},
 	}
 	raw, _ := json.Marshal(req)
 	out, err := Plan(nil, raw)

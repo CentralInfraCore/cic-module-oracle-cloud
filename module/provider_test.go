@@ -204,6 +204,8 @@ func TestPlanRejectsEmptyObserved(t *testing.T) {
 		Kind:     "cic:network:vcn",
 		Desired:  schemaPayload{SchemaID: "cic:network:vcn-config", SchemaVersion: "v0.1.0", SchemaHash: "abc123", Encoding: encCanonicalJSON, Data: json.RawMessage(`{"compartmentId":"ocid1.compartment..a","displayName":"new-vcn","cidrBlocks":["10.0.0.0/16"]}`)},
 		Observed: schemaPayload{SchemaID: "cic:network:vcn-state", SchemaVersion: "v0.1.0", SchemaHash: "abc123", Encoding: encCanonicalJSON, Data: json.RawMessage(`{}`)},
+		// The target names a resource, so an empty observed state contradicts it.
+		Target: execBinding{Host: "h", KeyID: "k", ResourceID: "ocid1.vcn..t"},
 	}
 	raw, _ := json.Marshal(req)
 	out, err := Plan(nil, raw)
@@ -253,6 +255,7 @@ func TestPlanSubnet(t *testing.T) {
 			Kind:     "cic:network:subnet",
 			Desired:  schemaPayload{SchemaID: "cic:network:subnet-config", SchemaVersion: "v0.1.0", SchemaHash: "abc123", Encoding: encCanonicalJSON, Data: json.RawMessage(desired)},
 			Observed: schemaPayload{SchemaID: "cic:network:subnet-state", SchemaVersion: "v0.1.0", SchemaHash: "abc123", Encoding: encCanonicalJSON, Data: json.RawMessage(observed)},
+			Target:   execBinding{Host: "h", KeyID: "k", ResourceID: "ocid1.subnet..t"},
 		}
 		raw, _ := json.Marshal(req)
 		out, err := Plan(nil, raw)
@@ -295,12 +298,10 @@ func TestExecuteAsyncAndBasePath(t *testing.T) {
 	}
 	defer func() { testCallHostSign = nil; testCallHostActuate = nil }()
 
-	req, _ := json.Marshal(executeRequest{
-		Kind:    "cic:network:vcn",
-		Plan:    executionPlan{ProviderOperations: []providerOperation{{Operation: "UpdateVcn", Method: "PUT", Path: "/vcns/{vcnId}"}}},
-		Config:  schemaPayload{Data: json.RawMessage(`{"displayName":"x"}`)},
-		Binding: execBinding{Host: "h", BasePath: "/20160918", KeyID: "k", ResourceID: "ocid1.vcn..z"},
-	})
+	req, _ := json.Marshal(m4aForOp(t, "cic:network:vcn",
+		providerOperation{Operation: "UpdateVcn", Method: "PUT", Path: "/vcns/{vcnId}"},
+		`{"displayName":"x"}`,
+		execBinding{Host: "h", BasePath: "/20160918", KeyID: "k", ResourceID: "ocid1.vcn..z"}))
 	out, _ := Execute(nil, req)
 	var er executionResult
 	json.Unmarshal(decodeResult(t, out).Result, &er)
@@ -333,12 +334,10 @@ func TestExecuteErrorAndIfMatch(t *testing.T) {
 	}
 	defer func() { testCallHostSign = nil; testCallHostActuate = nil }()
 
-	req, _ := json.Marshal(executeRequest{
-		Kind:    "cic:network:vcn",
-		Plan:    executionPlan{ProviderOperations: []providerOperation{{Operation: "UpdateVcn", Method: "PUT", Path: "/vcns/{vcnId}"}}},
-		Config:  schemaPayload{Data: json.RawMessage(`{"displayName":"x"}`)},
-		Binding: execBinding{Host: "h", KeyID: "k", ResourceID: "ocid1.vcn..z", Revision: "etag-42"},
-	})
+	req, _ := json.Marshal(m4aForOp(t, "cic:network:vcn",
+		providerOperation{Operation: "UpdateVcn", Method: "PUT", Path: "/vcns/{vcnId}"},
+		`{"displayName":"x"}`,
+		execBinding{Host: "h", KeyID: "k", ResourceID: "ocid1.vcn..z", Revision: "etag-42"}))
 	out, _ := Execute(nil, req)
 	var er executionResult
 	json.Unmarshal(decodeResult(t, out).Result, &er)
@@ -458,6 +457,7 @@ func planVcn(t *testing.T, desired, observed string) executionPlan {
 		Kind:     "cic:network:vcn",
 		Desired:  schemaPayload{SchemaID: "cic:network:vcn-config", SchemaVersion: "v0.1.0", SchemaHash: "abc123", Encoding: encCanonicalJSON, Data: json.RawMessage(desired)},
 		Observed: schemaPayload{SchemaID: "cic:network:vcn-state", SchemaVersion: "v0.1.0", SchemaHash: "abc123", Encoding: encCanonicalJSON, Data: json.RawMessage(observed)},
+		Target:   execBinding{Host: "h", KeyID: "k", ResourceID: "ocid1.vcn..t"},
 	}
 	raw, _ := json.Marshal(req)
 	out, err := Plan(nil, raw)
@@ -496,8 +496,10 @@ func TestPlanClassifiesDiff(t *testing.T) {
 			if p.Operation != c.wantOp {
 				t.Errorf("operation = %q, want %q (notes: %v)", p.Operation, c.wantOp, p.Notes)
 			}
-			if len(p.PlanID) < len("sha256:") {
-				t.Errorf("plan_id = %q, want a sha256 hash", p.PlanID)
+			for name, d := range map[string]string{"plan_digest": p.PlanDigest, "target_digest": p.TargetDigest, "execution_digest": p.ExecutionDigest} {
+				if len(d) != len("sha256:")+64 || d[:7] != "sha256:" {
+					t.Errorf("%s = %q, want sha256:<64 hex>", name, d)
+				}
 			}
 		})
 	}
