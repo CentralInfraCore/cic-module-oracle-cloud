@@ -61,7 +61,11 @@ const (
 	// TerminateInstance).
 	roleDelete = "delete"
 	// roleAction marks a named side operation that changes action-managed fields
-	// (ChangeVcnCompartment); a resource may have many.
+	// (ChangeVcnCompartment); a resource may have many. No code selects an op by
+	// this role yet (the action route is not built), so it is part of the
+	// contract vocabulary without a reader.
+	//
+	//lint:ignore U1000 contract vocabulary: the role name is reserved for the action route.
 	roleAction = "action"
 )
 
