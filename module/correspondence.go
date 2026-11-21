@@ -17,9 +17,13 @@ import (
 	"strings"
 )
 
+// vcnCorrespondence is the hand-authored derivation contract for the VCN kind.
+//
 //go:embed correspondence/vcn.json
 var vcnCorrespondence []byte
 
+// embeddedCorrespondences is every correspondence contract compiled in; each
+// names its resource kind and lists its derivations.
 var embeddedCorrespondences = [][]byte{vcnCorrespondence}
 
 // derivation fills a config field from a state field by a rule.
@@ -30,8 +34,12 @@ type derivation struct {
 }
 
 var (
+	// corrCache holds the parsed derivations by resource kind; valid once
+	// corrDone is set.
 	corrCache map[string][]derivation
-	corrDone  bool
+	// corrDone records that correspondences has filled corrCache, so the
+	// embedded contracts are parsed at most once.
+	corrDone bool
 )
 
 // correspondences lazily parses the embedded correspondence contracts (not init():
@@ -75,8 +83,10 @@ func applyDerivations(kind string, state, eff map[string]json.RawMessage) {
 	}
 }
 
-// jsonNonEmpty reports whether a JSON value is a non-empty array/string/object
-// (i.e. not null, not [], not "", not {}).
+// jsonNonEmpty reports whether a JSON value counts as present: it is false for
+// null, [], "", {}, 0 and false (and for an empty text), true for anything else.
+// The test is on the text with outer whitespace trimmed, so an empty container
+// written with inner whitespace ("[ ]") counts as non-empty.
 func jsonNonEmpty(raw json.RawMessage) bool {
 	s := strings.TrimSpace(string(raw))
 	switch s {
@@ -86,10 +96,13 @@ func jsonNonEmpty(raw json.RawMessage) bool {
 	return true
 }
 
+// jsonTrue reports whether a JSON value is the literal true (outer whitespace
+// ignored); anything else, including a missing or null value, is false.
 func jsonTrue(raw json.RawMessage) bool {
 	return strings.TrimSpace(string(raw)) == "true"
 }
 
+// boolJSON returns b as the JSON literal true or false.
 func boolJSON(b bool) json.RawMessage {
 	if b {
 		return json.RawMessage("true")

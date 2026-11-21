@@ -14,12 +14,21 @@ import (
 	"strings"
 )
 
+// vcnSchemaJSON is the generated {config, state, operations} bundle for the VCN
+// resource (core.Vcn).
+//
 //go:embed schemas/core/vcn.json
 var vcnSchemaJSON []byte
 
+// subnetSchemaJSON is the generated {config, state, operations} bundle for the
+// subnet resource (core.Subnet).
+//
 //go:embed schemas/core/subnet.json
 var subnetSchemaJSON []byte
 
+// instanceSchemaJSON is the generated {config, state, operations} bundle for the
+// compute instance resource (core.Instance).
+//
 //go:embed schemas/core/instance.json
 var instanceSchemaJSON []byte
 
@@ -41,10 +50,18 @@ type fieldDesc struct {
 // Go name is an SDK naming accident — LaunchInstance creates, TerminateInstance
 // deletes — so lifecycle decisions read this field, never the name.
 const (
-	roleRead   = "read"
+	// roleRead marks the operation that reads one resource (GetVcn, GetInstance).
+	roleRead = "read"
+	// roleCreate marks the operation that creates the resource (CreateVcn,
+	// LaunchInstance).
 	roleCreate = "create"
+	// roleUpdate marks the operation that applies mutable config changes.
 	roleUpdate = "update"
+	// roleDelete marks the operation that removes the resource (DeleteVcn,
+	// TerminateInstance).
 	roleDelete = "delete"
+	// roleAction marks a named side operation that changes action-managed fields
+	// (ChangeVcnCompartment); a resource may have many.
 	roleAction = "action"
 )
 
@@ -78,8 +95,12 @@ func (c resourceContract) opByRole(role string) (name string, op httpOp, ok bool
 }
 
 var (
+	// contractCache holds the contracts parsed from embeddedSchemas, keyed by
+	// resource kind; valid once contractDone is set.
 	contractCache map[string]resourceContract
-	contractDone  bool
+	// contractDone records that resourceContracts has filled contractCache, so
+	// the embedded schemas are parsed at most once.
+	contractDone bool
 )
 
 // resourceContracts lazily parses the embedded schemas into contracts. Lazy (not

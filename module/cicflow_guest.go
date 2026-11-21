@@ -14,9 +14,17 @@ import (
 	"unsafe"
 )
 
+// wasmCicFlowSign is the relay's cic-flow.sign host import: it takes a JSON
+// request at (reqPtr, reqLen), writes the JSON response into (outPtr, outLen) and
+// returns the bytes written, or -1 when the response did not fit or memory access
+// failed.
+//
 //go:wasmimport cic-flow sign
 func wasmCicFlowSign(reqPtr, reqLen, outPtr, outLen uint32) int32
 
+// wasmCicFlowActuate is the relay's cic-flow.actuate host import, with the same
+// request/response buffer convention and return value as wasmCicFlowSign.
+//
 //go:wasmimport cic-flow actuate
 func wasmCicFlowActuate(reqPtr, reqLen, outPtr, outLen uint32) int32
 
@@ -44,12 +52,15 @@ func hostCall(fn func(uint32, uint32, uint32, uint32) int32, req []byte) ([]byte
 	return out, nil
 }
 
-// A //go:wasmimport function cannot be used as a value, so wrap each in a plain
-// closure before handing it to hostCall.
+// callHostSign sends req to the host's cic-flow.sign and returns its JSON
+// response. A //go:wasmimport function cannot be used as a value, so each import
+// is wrapped in a plain closure before handing it to hostCall.
 func callHostSign(req []byte) ([]byte, error) {
 	return hostCall(func(rp, rl, op, ol uint32) int32 { return wasmCicFlowSign(rp, rl, op, ol) }, req)
 }
 
+// callHostActuate sends req to the host's cic-flow.actuate and returns its JSON
+// response; a host-side failure arrives as an {"error": ...} body, not as err.
 func callHostActuate(req []byte) ([]byte, error) {
 	return hostCall(func(rp, rl, op, ol uint32) int32 { return wasmCicFlowActuate(rp, rl, op, ol) }, req)
 }

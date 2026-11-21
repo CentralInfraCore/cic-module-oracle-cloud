@@ -11,10 +11,16 @@ package main
 import "errors"
 
 var (
-	testCallHostSign    func(req []byte) ([]byte, error)
+	// testCallHostSign, when set by a test, stands in for the cic-flow.sign host
+	// call in the host build.
+	testCallHostSign func(req []byte) ([]byte, error)
+	// testCallHostActuate, when set by a test, stands in for the cic-flow.actuate
+	// host call in the host build.
 	testCallHostActuate func(req []byte) ([]byte, error)
 )
 
+// callHostSign is the host-build cic-flow.sign: it delegates to testCallHostSign
+// when a test injected one, and otherwise fails.
 func callHostSign(req []byte) ([]byte, error) {
 	if testCallHostSign != nil {
 		return testCallHostSign(req)
@@ -22,6 +28,8 @@ func callHostSign(req []byte) ([]byte, error) {
 	return nil, errors.New("cic-flow.sign unavailable on host")
 }
 
+// callHostActuate is the host-build cic-flow.actuate: it delegates to
+// testCallHostActuate when a test injected one, and otherwise fails.
 func callHostActuate(req []byte) ([]byte, error) {
 	if testCallHostActuate != nil {
 		return testCallHostActuate(req)
