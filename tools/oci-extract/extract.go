@@ -10,8 +10,8 @@
 //	name:"opc-request-id"                   actual HTTP parameter name
 //	presentIn:"body|header"                 where a response field is read
 //
-// This slice extracts models (the *Details / request / response structs). Joining
-// the client method's HTTP method+path is a later P2.2 step.
+// extract.go extracts models (the *Details / request / response structs);
+// client.go joins each client method's HTTP method+path into operations.
 package ociextract
 
 import (
@@ -97,6 +97,9 @@ func ExtractFile(path string) ([]Model, error) {
 	return models, nil
 }
 
+// extractFields returns a struct's fields in source order with their tag metadata
+// and doc. A field declaring several names yields one Field per name; an embedded
+// field is named after its type's last identifier.
 func extractFields(st *ast.StructType) []Field {
 	var fields []Field
 	for _, f := range st.Fields.List {
@@ -123,6 +126,8 @@ func extractFields(st *ast.StructType) []Field {
 	return fields
 }
 
+// structTag is the subset of an SDK struct tag the registry records: the JSON
+// name, mandatory, and the request/response wire placement and HTTP name.
 type structTag struct {
 	json          string
 	mandatory     bool
@@ -131,6 +136,8 @@ type structTag struct {
 	httpName      string
 }
 
+// parseTag reads a field's tag literal into a structTag; a field without a tag
+// yields the zero value.
 func parseTag(lit *ast.BasicLit) structTag {
 	var t structTag
 	if lit == nil {
@@ -171,6 +178,9 @@ func typeString(expr ast.Expr) string {
 	}
 }
 
+// lastIdent returns the final identifier of a type string as typeString renders
+// it, without leading pointer or slice markers or a package qualifier
+// ("*core.Vcn" -> "Vcn").
 func lastIdent(typ string) string {
 	typ = strings.TrimLeft(typ, "*[]")
 	if i := strings.LastIndex(typ, "."); i >= 0 {

@@ -26,11 +26,17 @@ import (
 	ociextract "github.com/CentralInfraCore/cic-module-oracle-cloud/tools/oci-extract"
 )
 
+// registry is the default output: every operation from the *_client.go inputs
+// and every model from the other inputs, as one JSON object.
 type registry struct {
 	Operations []ociextract.Operation `json:"operations"`
 	Models     []ociextract.Model     `json:"models"`
 }
 
+// main dispatches on the mode flag (-diff, -audit, -policy/-schema, or the
+// default registry dump) and writes JSON to stdout. Exit codes: 1 on a read or
+// parse error, 2 on a usage error, 3 when -diff finds a breaking change, 4 when
+// -audit finds an unresolved operation.
 func main() {
 	policyRes := flag.String("policy", "", "derive the field policy for <Resource> (its read-model name, e.g. Vcn) from the given model files")
 	schemaRes := flag.String("schema", "", "emit the {config, state} CIC payload schemas for <Resource> from the given model files")
@@ -187,6 +193,7 @@ func reportUnresolved(res ociextract.Resolution) {
 	os.Exit(5)
 }
 
+// emit writes v to stdout as indented JSON; an encoding error exits with 1.
 func emit(v interface{}) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")

@@ -40,10 +40,16 @@ import (
 
 // Operation roles a resource's lifecycle is built from.
 const (
-	RoleRead   = "read"
+	// RoleRead: GET on the resource's own path.
+	RoleRead = "read"
+	// RoleCreate: POST on the collection path (the read path minus its trailing
+	// /{param}).
 	RoleCreate = "create"
+	// RoleUpdate: PUT on the read path, else POST on it.
 	RoleUpdate = "update"
+	// RoleDelete: DELETE on the read path.
 	RoleDelete = "delete"
+	// RoleAction: a POST under <readPath>/… (ChangeVcnCompartment, AddVcnCidr).
 	RoleAction = "action"
 )
 
