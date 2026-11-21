@@ -1,0 +1,12 @@
+# docgate exclusions (tools/docgate/docgate.py): fnmatch globs of repository-relative paths.
+# Each entry is documented elsewhere or must not change; see the reason above it.
+
+# Template copies of base-repo (wasm / base flavor), documented there.
+module/envelope.go
+tools/__init__.py
+tools/schemalib/*
+tools/check_doc_links.py
+tools/compiler.py
+tools/infra.py
+tools/finalize_release.py
+tools/releaselib/*
