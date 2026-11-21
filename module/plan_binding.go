@@ -23,8 +23,12 @@ import (
 // Domain tags. Each digest has its own, so objects of different roles never share a
 // hash namespace, and a new definition changes the tag.
 const (
-	planDigestTag      = "cic-oracle-execution-plan/1"
-	targetDigestTag    = "cic-oracle-execution-target/1"
+	// planDigestTag is the "v" member of the plan_digest input (planEnvelope).
+	planDigestTag = "cic-oracle-execution-plan/1"
+	// targetDigestTag is the "v" member of the target_digest input (targetEnvelope).
+	targetDigestTag = "cic-oracle-execution-target/1"
+	// executionDigestTag is the "v" member of the execution_digest input
+	// (executionEnvelope), which binds a plan digest to a target digest.
 	executionDigestTag = "cic-oracle-execution/1"
 )
 
@@ -36,6 +40,7 @@ type jmember struct {
 	val []byte
 }
 
+// jstr returns s as a canonical JSON string.
 func jstr(s string) []byte { return canonString(nil, []byte(s)) }
 
 // jnullable writes an empty value as null: a field that is absent and a field that is
@@ -47,6 +52,10 @@ func jnullable(s string) []byte {
 	return jstr(s)
 }
 
+// jobj returns a JSON object of the given members sorted by key bytes, as
+// canonicalJSON orders them. Each value must already be canonical JSON; keys are
+// not checked for duplicates, so callers pass distinct keys. The members slice is
+// sorted in place.
 func jobj(ms ...jmember) []byte {
 	sort.Slice(ms, func(i, j int) bool { return ms[i].key < ms[j].key })
 	out := []byte{'{'}
@@ -61,6 +70,7 @@ func jobj(ms ...jmember) []byte {
 	return append(out, '}')
 }
 
+// jarr returns a JSON array of the given canonical values, in the order given.
 func jarr(vs ...[]byte) []byte {
 	out := []byte{'['}
 	for i, v := range vs {
@@ -72,6 +82,7 @@ func jarr(vs ...[]byte) []byte {
 	return append(out, ']')
 }
 
+// digestOf returns the SHA-256 of a digest input as "sha256:<lower-case hex>".
 func digestOf(envelope []byte) string {
 	sum := sha256.Sum256(envelope)
 	return "sha256:" + hex.EncodeToString(sum[:])
@@ -110,11 +121,16 @@ func contractEnvelope(kind string, c resourceContract, known bool) []byte {
 	)
 }
 
+// contractDigest returns the digest of the kind's contract as compiled into this
+// module; an unknown kind still gets a digest (of {"kind", "known": false}).
 func contractDigest(kind string) string {
 	c, ok := resourceContracts()[kind]
 	return digestOf(contractEnvelope(kind, c, ok))
 }
 
+// payloadEnvelope is the canonical form of one schema payload as it enters a
+// digest: its data in cic-canonical-json/1 and its encoding and schema identity.
+// It fails when the data is not strict JSON or exceeds a canonical-JSON bound.
 func payloadEnvelope(p schemaPayload) ([]byte, error) {
 	data, err := canonicalJSON(p.Data)
 	if err != nil {

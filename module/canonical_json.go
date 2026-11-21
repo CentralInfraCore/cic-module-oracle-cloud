@@ -23,18 +23,29 @@ import (
 // Bounds. They keep the canonical form cheap and the recursion shallow whatever a
 // caller sends; an input beyond them is refused, never truncated.
 const (
-	canonMaxInput  = 1 << 20 // bytes of input text
-	canonMaxDepth  = 64      // nesting of arrays and objects
-	canonMaxDigits = 1000    // digits in a number's integer and fraction parts
-	canonMaxExpLen = 6       // digits in a number's written exponent
-	canonMaxExp    = 10000   // |exponent| of the normalized number
+	// canonMaxInput is the largest accepted input text, in bytes.
+	canonMaxInput = 1 << 20
+	// canonMaxDepth is the deepest accepted nesting of arrays and objects.
+	canonMaxDepth = 64
+	// canonMaxDigits caps the digits in a number's integer and fraction parts together.
+	canonMaxDigits = 1000
+	// canonMaxExpLen caps the digits in a number's written exponent.
+	canonMaxExpLen = 6
+	// canonMaxExp caps |exponent| of the normalized number (after the fraction
+	// digits and the trailing zeros are folded into it).
+	canonMaxExp = 10000
 )
 
+// canonMember is one object member during canonicalization: the decoded key, by
+// which members are sorted and checked for duplicates, and the value already in
+// canonical form.
 type canonMember struct {
 	key string // decoded key, UTF-8
 	val []byte // canonical form of the value
 }
 
+// canonParser is a single-pass reader over one JSON text that emits the canonical
+// form as it parses; pos is the byte offset of the next unread byte.
 type canonParser struct {
 	src []byte
 	pos int
@@ -63,10 +74,13 @@ func canonicalJSON(raw []byte) ([]byte, error) {
 	return out, nil
 }
 
+// fail returns a parse error naming the reason and the current byte offset; the
+// input text itself is never quoted.
 func (p *canonParser) fail(why string) error {
 	return fmt.Errorf("json: %s at byte %d", why, p.pos)
 }
 
+// skipSpace advances past the four JSON whitespace bytes (space, tab, LF, CR).
 func (p *canonParser) skipSpace() {
 	for p.pos < len(p.src) {
 		switch p.src[p.pos] {
@@ -78,6 +92,8 @@ func (p *canonParser) skipSpace() {
 	}
 }
 
+// value reads the JSON value at p.pos and returns its canonical form, dispatching
+// on the first byte; depth is the nesting level of the enclosing container.
 func (p *canonParser) value(depth int) ([]byte, error) {
 	if p.pos >= len(p.src) {
 		return nil, p.fail("a value is missing")
@@ -105,6 +121,7 @@ func (p *canonParser) value(depth int) ([]byte, error) {
 	return nil, p.fail("an unexpected character")
 }
 
+// literal consumes exactly word (true, false or null) and returns it unchanged.
 func (p *canonParser) literal(word string) ([]byte, error) {
 	if len(p.src)-p.pos < len(word) || string(p.src[p.pos:p.pos+len(word)]) != word {
 		return nil, p.fail("an invalid literal")
@@ -113,6 +130,9 @@ func (p *canonParser) literal(word string) ([]byte, error) {
 	return []byte(word), nil
 }
 
+// array reads an array at p.pos (on the '[') and returns it with its elements in
+// canonical form, in their original order and without whitespace. It refuses
+// nesting beyond canonMaxDepth.
 func (p *canonParser) array(depth int) ([]byte, error) {
 	if depth > canonMaxDepth {
 		return nil, p.fail("nesting is deeper than the limit")
@@ -150,6 +170,9 @@ func (p *canonParser) array(depth int) ([]byte, error) {
 	}
 }
 
+// object reads an object at p.pos (on the '{') and returns it with its members
+// sorted by the bytes of their decoded keys and its values in canonical form. A
+// duplicated key is an error, and so is nesting beyond canonMaxDepth.
 func (p *canonParser) object(depth int) ([]byte, error) {
 	if depth > canonMaxDepth {
 		return nil, p.fail("nesting is deeper than the limit")
@@ -284,6 +307,8 @@ func (p *canonParser) str() ([]byte, error) {
 	}
 }
 
+// hex4 reads the four hex digits of a \u escape (either case) and returns the
+// code unit they spell; surrogate pairing is left to str.
 func (p *canonParser) hex4() (rune, error) {
 	if p.pos+4 > len(p.src) {
 		return 0, p.fail("a short \\u escape")

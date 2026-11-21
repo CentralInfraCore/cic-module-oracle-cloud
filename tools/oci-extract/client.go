@@ -185,6 +185,8 @@ func httpMethodArg(e ast.Expr) string {
 	return ""
 }
 
+// stringLit returns the value of e when it is a Go string literal (quoted or raw),
+// and false for any other expression or an unquotable literal.
 func stringLit(e ast.Expr) (string, bool) {
 	lit, ok := e.(*ast.BasicLit)
 	if !ok || lit.Kind != token.STRING {
@@ -329,6 +331,8 @@ func receiverType(fn *ast.FuncDecl) string {
 	return lastIdent(typeString(fn.Recv.List[0].Type))
 }
 
+// lowerFirst returns s with its first byte lower-cased (ASCII), e.g. a Go field
+// name turned into its JSON spelling.
 func lowerFirst(s string) string {
 	if s == "" {
 		return s

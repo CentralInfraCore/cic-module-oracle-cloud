@@ -64,8 +64,12 @@ type schemaPayload struct {
 }
 
 const (
+	// encCanonicalJSON is the payload encoding whose data is a raw JSON
+	// instance; it is the only encoding validate, plan and execute decode.
 	encCanonicalJSON = "canonical-json"
-	encCBOR          = "cbor"
+	// encCBOR is accepted by the envelope check (data must be non-empty) but is
+	// not decoded by this module.
+	encCBOR = "cbor"
 )
 
 // ---- provider-error (provider-abi.md, "Error model") ----
@@ -83,14 +87,29 @@ type providerError struct {
 
 // Error classes (provider-abi.md). class is CIC-canonical, not provider-native.
 const (
-	classSchema     = "schema"
+	// classSchema: a schema-payload envelope is malformed (missing tag, bad
+	// hash, unknown encoding, undecodable data).
+	classSchema = "schema"
+	// classValidation: the request or the intent breaks the contract (also OCI
+	// 400).
 	classValidation = "validation"
-	classConflict   = "conflict"
-	classNotFound   = "not-found"
+	// classConflict: the provider refused a concurrent or stale change (OCI
+	// 409/412, If-Match mismatch).
+	classConflict = "conflict"
+	// classNotFound: the provider reports no such resource (OCI 404, which does
+	// not distinguish "deleted" from "not visible to the caller").
+	classNotFound = "not-found"
+	// classPermission: the provider refused the caller (OCI 401/403).
 	classPermission = "permission"
-	classTransport  = "transport"
-	classProvider   = "provider"
-	classInternal   = "internal"
+	// classTransport: the request did not complete (the sign or actuate host
+	// call failed), or OCI throttled it (429, retryable).
+	classTransport = "transport"
+	// classProvider: any other provider-side failure (OCI 5xx, retryable; an
+	// unmapped status; an unusable response body).
+	classProvider = "provider"
+	// classInternal: a fault inside the module itself, such as an embedded
+	// contract that lacks the operation an op needs.
+	classInternal = "internal"
 )
 
 // ---- result discriminator ----
@@ -100,12 +119,16 @@ const (
 // it travels in data as the error arm of this discriminator — not in the
 // transport error slot, which is reserved for malformed input / internal panics.
 
+// providerResult is the result<T, provider-error> discriminator every op returns
+// in the transport's data slot: Status "ok" with Result, or "error" with Error.
 type providerResult struct {
 	Status string          `json:"status"` // "ok" | "error"
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  *providerError  `json:"error,omitempty"`
 }
 
+// okResult wraps v as the ok arm of providerResult. Its error is a marshalling
+// failure, which the dispatcher (abi.go) reports in the transport error slot.
 func okResult(v interface{}) ([]byte, error) {
 	inner, err := json.Marshal(v)
 	if err != nil {
@@ -114,12 +137,16 @@ func okResult(v interface{}) ([]byte, error) {
 	return json.Marshal(providerResult{Status: "ok", Result: json.RawMessage(inner)})
 }
 
+// errResult wraps a domain error as the error arm of providerResult; the call
+// itself still succeeds on the transport.
 func errResult(pe *providerError) ([]byte, error) {
 	return json.Marshal(providerResult{Status: "error", Error: pe})
 }
 
 // ---- describe (implemented) ----
 
+// moduleManifest is what Describe returns: the module's identity, ABI version,
+// resource kinds, op set, and its declared host imports and capability reach.
 type moduleManifest struct {
 	Name                 string      `json:"name"`
 	Version              string      `json:"version"`
@@ -185,21 +212,27 @@ func supportedKinds() []string {
 
 // ---- validate (envelope-level implemented; schema-conformance scaffold) ----
 
+// validationRequest is the input of Validate: the resource kind and the intent
+// payload to check.
 type validationRequest struct {
 	Kind   string        `json:"kind"`
 	Intent schemaPayload `json:"intent"`
 }
 
+// validationResult is the output of Validate. Checked names the checks that
+// actually ran ("envelope.well-formed", and "schema-conformance" when it ran), so
+// Admissible never claims more than was verified.
 type validationResult struct {
 	Admissible bool            `json:"admissible"`
 	Checked    []string        `json:"checked"` // what was actually verified
 	Errors     []providerError `json:"errors,omitempty"`
 }
 
-// Validate checks the intent envelope for well-formedness. It does NOT yet check
-// the payload against its schema — that needs the generated OCI payload schemas
-// (roadmap P2.3) — and it says so via validation-result.checked, so a caller is
-// never misled into thinking schema-conformance was verified. Pure.
+// Validate checks the intent envelope for well-formedness and, when the module
+// has an embedded contract for the kind and the envelope has no errors, checks the
+// payload against that contract (conformIntent). validation-result.checked lists
+// exactly the checks that ran, so for an unknown kind or a malformed envelope a
+// caller is never misled into thinking schema-conformance was verified. Pure.
 func Validate(auth, data []byte) ([]byte, error) {
 	var req validationRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -329,6 +362,8 @@ func checkEnvelope(field string, p schemaPayload) []providerError {
 
 // ---- plan (noop implemented; diff scaffold) ----
 
+// planRequest is the input of Plan: the kind, the desired and observed payloads
+// to diff, and the target the plan will run against.
 type planRequest struct {
 	Kind     string        `json:"kind"`
 	Desired  schemaPayload `json:"desired"`
@@ -340,6 +375,9 @@ type planRequest struct {
 	Target execBinding `json:"target"`
 }
 
+// executionPlan is the output of Plan and the plan Execute receives back: the
+// classified operation, the concrete provider operations in execution order,
+// human-readable notes, and the digests that bind it.
 type executionPlan struct {
 	// PlanDigest identifies everything the plan will execute: kind, contract, desired,
 	// observed, operation and the ordered provider operations. TargetDigest identifies
@@ -570,6 +608,8 @@ func finishPlan(req planRequest, p executionPlan) (executionPlan, *providerError
 	return p, nil
 }
 
+// decodeObject decodes a payload's data as a JSON object of raw member values.
+// Anything other than an object or null is an error; null decodes to a nil map.
 func decodeObject(raw json.RawMessage) (map[string]json.RawMessage, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -613,6 +653,9 @@ func escalateOp(cur, next string) string {
 	return cur
 }
 
+// planNotes returns the plan's human-readable explanation: for a noop that
+// nothing differs, otherwise the operation and the changed fields. Notes are not
+// part of the plan digest.
 func planNotes(op string, changed []string) []string {
 	if op == "noop" {
 		return []string{"desired == observed; no provider operations"}
@@ -636,15 +679,18 @@ func canonicalEqual(a, b json.RawMessage) bool {
 	return string(na) == string(nb)
 }
 
-// ---- sign+send ops (scaffold — host capability not yet available) ----
+// ---- sign+send ops ----
 
 // Observe/Execute/Poll/Invoke/Destroy all require the relay trust-flow sign+send
-// host capability (relay-requirements.md R1/R2). Until the host exposes it, each
-// returns the typed hostSignSendUnavailable error — an honest scaffold, not a
-// faked success.
+// host capability (relay-requirements.md R1/R2): they sign and send through
+// actuateSigned, which calls the cic-flow sign and actuate host functions. When
+// the host does not provide them (a host build with no injected stand-in), the
+// call fails and the op reports a transport error — never a faked success.
 
 // ---- destroy (implemented: signed DELETE) ----
 
+// destroyRequest is the input of Destroy: the kind and the binding naming the
+// resource to delete.
 type destroyRequest struct {
 	Kind    string      `json:"kind"`
 	Binding execBinding `json:"binding"`
@@ -694,6 +740,8 @@ func Destroy(auth, data []byte) ([]byte, error) {
 
 // ---- invoke (implemented: a named non-CRUD action) ----
 
+// invokeRequest is the input of Invoke: the kind, the exact name of an operation
+// in the kind's registry, its input fields, and the binding of the target.
 type invokeRequest struct {
 	Kind      string        `json:"kind"`
 	Operation string        `json:"operation"` // e.g. ChangeVcnCompartment
@@ -701,6 +749,9 @@ type invokeRequest struct {
 	Binding   execBinding   `json:"binding"`
 }
 
+// operationResult is the output of Invoke: the outcome of the one operation it ran,
+// with the OCI request evidence (status, etag, opc-request-id) and, for an
+// accepted async operation, the Work Request id to poll.
 type operationResult struct {
 	Status        string `json:"status"` // succeeded | accepted | failed
 	Operation     string `json:"operation"`
@@ -772,6 +823,8 @@ func Invoke(auth, data []byte) ([]byte, error) {
 
 // ---- poll (implemented: advance an async job toward terminal) ----
 
+// pollRequest is the input of Poll: the binding (host, key and API version) and
+// exactly one of WorkRequestID or the legacy Path.
 type pollRequest struct {
 	Binding execBinding `json:"binding"`
 	// WorkRequestID is the id an async execute step returned (work_request_id).
@@ -780,6 +833,8 @@ type pollRequest struct {
 	Path string `json:"path,omitempty"`
 }
 
+// pollResult is the output of Poll: the Work Request's status and progress as OCI
+// reports them, and whether that status is terminal.
 type pollResult struct {
 	WorkStatus      string `json:"work_status"`      // OCI WorkRequest status
 	PercentComplete int    `json:"percent_complete"` // 0..100
@@ -908,6 +963,8 @@ func apiVersionOK(v string) bool {
 	return true
 }
 
+// isTerminalWorkStatus reports whether an OCI Work Request status is final:
+// SUCCEEDED, FAILED or CANCELED (also the CANCELLED spelling), in any case.
 func isTerminalWorkStatus(s string) bool {
 	switch strings.ToUpper(s) {
 	case "SUCCEEDED", "FAILED", "CANCELED", "CANCELLED":
@@ -999,17 +1056,24 @@ func resolveOp(kind, role string, b execBinding) (string, httpOp, *providerError
 
 // ---- observe (implemented: read current state + effective_config) ----
 
+// observeRequest is the input of Observe: the kind and the binding naming the
+// resource to read.
 type observeRequest struct {
 	Kind    string      `json:"kind"`
 	Binding execBinding `json:"binding"`
 }
 
+// observation is the output of Observe: the raw state, its config-surface
+// projection, and the evidence of the read.
 type observation struct {
 	State            map[string]json.RawMessage `json:"state"`            // raw provider state as read
 	EffectiveConfig  map[string]json.RawMessage `json:"effective_config"` // config-surface projection, comparable to intent
 	ProviderMetadata provMeta                   `json:"provider_metadata"`
 }
 
+// provMeta is the provider-side evidence of a read: the resource id, its etag
+// (the revision used for optimistic concurrency), the OCI request id, and when it
+// was observed.
 type provMeta struct {
 	ResourceID   string `json:"resource_id"`
 	Etag         string `json:"etag,omitempty"`
@@ -1088,6 +1152,8 @@ func effectiveConfig(c resourceContract, state map[string]json.RawMessage) map[s
 
 // ---- execute (implemented against the relay cic-flow host module, R1/R2) ----
 
+// executeRequest is the input of Execute: the plan with its digests, the desired
+// and observed payloads it was derived from, the config to send, and the binding.
 type executeRequest struct {
 	Kind string        `json:"kind"`
 	Plan executionPlan `json:"plan"` // the plan, with its three digests
@@ -1118,6 +1184,8 @@ func opPath(b execBinding, rawPath string) string {
 	return b.BasePath + templatePath(rawPath, b.ResourceID)
 }
 
+// executionResult is the output of Execute and Destroy: the overall status and
+// one executionStep per provider operation that ran.
 type executionResult struct {
 	Status string          `json:"status"` // succeeded | failed
 	Steps  []executionStep `json:"steps"`
@@ -1126,6 +1194,9 @@ type executionResult struct {
 	ExecutionDigest string `json:"execution_digest,omitempty"`
 }
 
+// executionStep is the record of one signed provider request: the operation, the
+// OCI response evidence, the Work Request id when it is async, the created
+// resource id for a create, and the error when it failed.
 type executionStep struct {
 	Operation     string `json:"operation"`
 	HTTPStatus    int    `json:"http_status,omitempty"`
@@ -1307,6 +1378,8 @@ func checkPlanBinding(req executeRequest) (executionPlan, *providerError) {
 	return derived, nil
 }
 
+// isAbsent reports whether a payload's data is missing: empty, or exactly the
+// text null.
 func isAbsent(raw json.RawMessage) bool {
 	return len(raw) == 0 || string(raw) == "null"
 }
@@ -1552,7 +1625,8 @@ func ocidPrefixForKind(kind string) string {
 	return "ocid1."
 }
 
-// actuateSigned is the shared sign-then-send core used by execute and observe:
+// actuateSigned is the shared sign-then-send core used by observe, execute,
+// invoke, destroy and poll:
 // build the OCI canonical string, cic-flow.sign it, assemble the Authorization
 // header, cic-flow.actuate, and return the decoded response. The key never
 // enters the guest; the host enforces egress + scope.
@@ -1642,6 +1716,14 @@ func renderBody(c resourceContract, po providerOperation, config map[string]json
 	return out
 }
 
+// pathSplicesID reports whether templatePath would put the resource id into path.
+// It mirrors templatePath's own rule (a "{" followed later by a "}"), so the two
+// cannot disagree about what counts as a placeholder.
+func pathSplicesID(path string) bool {
+	i := strings.IndexByte(path, '{')
+	return i >= 0 && strings.IndexByte(path[i:], '}') >= 0
+}
+
 // templatePath replaces each {param} segment with the bound resource id, so a
 // registry path like /vcns/{vcnId} targets the concrete resource.
 //
@@ -1651,14 +1733,6 @@ func renderBody(c resourceContract, po providerOperation, config map[string]json
 // end). For an id with no "{" the result is exactly what the previous
 // re-scanning loop produced. It does NOT escape the id: callers that hand it an
 // id from an untrusted source must validate it first (createdResourceID does).
-// pathSplicesID reports whether templatePath would put the resource id into path.
-// It mirrors templatePath's own rule (a "{" followed later by a "}"), so the two
-// cannot disagree about what counts as a placeholder.
-func pathSplicesID(path string) bool {
-	i := strings.IndexByte(path, '{')
-	return i >= 0 && strings.IndexByte(path[i:], '}') >= 0
-}
-
 func templatePath(path, resourceID string) string {
 	var out strings.Builder
 	for {
@@ -1678,6 +1752,7 @@ func templatePath(path, resourceID string) string {
 	return out.String()
 }
 
+// firstNonEmpty returns a, or b when a is empty.
 func firstNonEmpty(a, b string) string {
 	if a != "" {
 		return a

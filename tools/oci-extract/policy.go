@@ -18,12 +18,21 @@ import (
 
 // Field policy classes.
 const (
-	PolicyMutable    = "mutable"     // in Update — freely changeable
-	PolicyAction     = "action"      // changeable only via a named action model
-	PolicyCreateOnly = "create-only" // set at create, then immutable
-	PolicyInputOnly  = "input-only"  // accepted at create but never read back
-	PolicyOutputOnly = "output-only" // provider-computed, read-only
-	PolicyUnknown    = "unknown"
+	// PolicyMutable: the field is in the Update model, so it is freely changeable.
+	PolicyMutable = "mutable"
+	// PolicyAction: not in Update, but changeable through a named Change*Details
+	// action model (FieldPolicy.Action names it).
+	PolicyAction = "action"
+	// PolicyCreateOnly: set at create and read back, but not changeable after.
+	PolicyCreateOnly = "create-only"
+	// PolicyInputOnly: accepted at create but never read back.
+	PolicyInputOnly = "input-only"
+	// PolicyOutputOnly: provider-computed; only in the read model.
+	PolicyOutputOnly = "output-only"
+	// PolicyUnknown: the field is in none of the models. DeriveFieldPolicy only
+	// classifies fields from the Create, Update and Read models, so this is a
+	// defensive default the current classification does not produce.
+	PolicyUnknown = "unknown"
 )
 
 // FieldPolicy is one field's classification across the Create/Update/Read models.

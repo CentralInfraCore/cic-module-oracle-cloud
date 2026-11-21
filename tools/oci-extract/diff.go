@@ -34,16 +34,27 @@ type SchemaDiff struct {
 	Compatible []Change `json:"compatible"`
 }
 
-// Breaking change kinds.
+// Change kinds. The first four are breaking; ChangeAdded and ChangePolicy are
+// compatible.
 const (
-	ChangeRemoved     = "removed"
+	// ChangeRemoved (breaking): a config field present in the old schema is gone.
+	ChangeRemoved = "removed"
+	// ChangeNowRequired (breaking): an existing field became required.
 	ChangeNowRequired = "now-required"
-	ChangeAddedReq    = "added-required"
+	// ChangeAddedReq (breaking): a new field that is required.
+	ChangeAddedReq = "added-required"
+	// ChangeTypeChanged (breaking): a field's JSON type changed; Detail is
+	// "old -> new".
 	ChangeTypeChanged = "type-changed"
-	ChangeAdded       = "added"
-	ChangePolicy      = "policy-changed"
+	// ChangeAdded (compatible): a new optional field.
+	ChangeAdded = "added"
+	// ChangePolicy (compatible): a field's x-cic-policy changed; Detail is
+	// "old -> new".
+	ChangePolicy = "policy-changed"
 )
 
+// configView is the part of a bundle's config schema the diff compares: which
+// fields are required, and each field's type and CIC policy.
 type configView struct {
 	required map[string]bool
 	fields   map[string]struct {
@@ -52,6 +63,8 @@ type configView struct {
 	}
 }
 
+// parseConfigView decodes the config schema of one {config, state} bundle into a
+// configView; it fails only when the bundle is not valid JSON.
 func parseConfigView(bundle []byte) (configView, error) {
 	var b struct {
 		Config struct {
@@ -120,6 +133,8 @@ func DiffConfigSchemas(oldBundle, newBundle []byte) (SchemaDiff, error) {
 	return d, nil
 }
 
+// sortChanges orders changes by field, then by kind, in place, so the diff output
+// is stable.
 func sortChanges(cs []Change) {
 	sort.Slice(cs, func(i, j int) bool {
 		if cs[i].Field != cs[j].Field {

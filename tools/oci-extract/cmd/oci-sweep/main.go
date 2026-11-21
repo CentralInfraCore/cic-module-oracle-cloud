@@ -43,6 +43,11 @@ var namedZeroOpExclusions = map[string]string{
 	"cloud_gate_oauth_client.go":                                "cloudgate — OAuth helper client, no provisioning operations",
 }
 
+// ServiceReport is the sweep result for one SDK service directory: operation
+// resolution coverage, the A/B/C/D resource classification (with the class A, B
+// and D resource names), the path-parameter histogram of its Get operations,
+// the async (opc-work-request-id) candidate operations, and the endpoint
+// template.
 type ServiceReport struct {
 	Service       string   `json:"service"`
 	ClientFiles   int      `json:"client_files"`
@@ -71,6 +76,9 @@ type ServiceReport struct {
 	EndpointTemplate    string `json:"endpoint_template,omitempty"`
 }
 
+// SweepReport is the whole sweep output: one ServiceReport per service, sorted by
+// name, the SDK-wide totals, and the zero-operation client files with the reason
+// each is excluded.
 type SweepReport struct {
 	SDKVersion string          `json:"sdk_version"`
 	Services   []ServiceReport `json:"services"`
@@ -89,8 +97,16 @@ type SweepReport struct {
 	ExcludedZeroOpClients map[string]string `json:"excluded_zero_op_clients"`
 }
 
+// endpointTemplateRe matches a client constructor's
+// EndpointForTemplate[DottedRegion]("<service>", "<template>") call and captures
+// the two string arguments.
 var endpointTemplateRe = regexp.MustCompile(`EndpointForTemplate(?:DottedRegion)?\("([^"]*)",\s*"([^"]*)"`)
 
+// main walks every top-level directory of the SDK root given by -sdk, builds a
+// ServiceReport for each one that has a *_client.go, and prints the SweepReport
+// as JSON. With -write-schemas, it also writes the schema bundle of every class A
+// resource under that directory (ids prefixed by -ns-prefix, default "cic"). It
+// exits 2 without -sdk and 1 on a read or extraction error.
 func main() {
 	sdkRoot := os.Args[1:]
 	var sdk, writeSchemas, nsPrefix string
@@ -311,6 +327,7 @@ func listServiceFiles(dir string) (clientFiles, modelFiles []string, err error) 
 	return clientFiles, modelFiles, nil
 }
 
+// fileExists reports whether path can be stat'ed (a file or a directory).
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil

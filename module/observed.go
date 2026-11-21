@@ -31,13 +31,22 @@ import (
 	"encoding/json"
 )
 
+// coverageState says how much of one config field a read actually observed; the
+// four values and their meaning are listed in the file comment above.
 type coverageState string
 
 const (
-	covObserved   coverageState = "observed"
-	covAbsent     coverageState = "absent"
+	// covObserved: the field is in the answer with the contract's type.
+	covObserved coverageState = "observed"
+	// covAbsent: OCI omitted the field and, for this kind and field
+	// (unsetWhenOmitted), omission means "not set".
+	covAbsent coverageState = "absent"
+	// covUnobserved: the value could not be obtained (no answer, an input-only
+	// field, or a missing derivation source).
 	covUnobserved coverageState = "unobserved"
-	covUnknown    coverageState = "unknown"
+	// covUnknown: something was read but cannot be trusted (wrong type, a
+	// non-object body, an HTTP error, or an omission not declared as "not set").
+	covUnknown coverageState = "unknown"
 )
 
 // unsetWhenOmitted lists, per kind, the config fields for which OCI leaves the
@@ -138,6 +147,8 @@ func normalizeObserved(kind string, o getOutcome) (normalizedObservation, bool) 
 	return out, true
 }
 
+// isJSONNull reports whether a value is the JSON literal null (surrounding
+// whitespace ignored).
 func isJSONNull(raw json.RawMessage) bool {
 	return string(bytes.TrimSpace(raw)) == "null"
 }
