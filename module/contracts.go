@@ -61,11 +61,12 @@ const (
 	// TerminateInstance).
 	roleDelete = "delete"
 	// roleAction marks a named side operation that changes action-managed fields
-	// (ChangeVcnCompartment); a resource may have many. No code selects an op by
-	// this role yet (the action route is not built), so it is part of the
-	// contract vocabulary without a reader.
+	// (ChangeVcnCompartment); a resource may have many. Such an operation is
+	// selected by the field's own action name (planProviderOps), never by role,
+	// because the role is not unique per resource - so no code reads this
+	// constant. It names the schema's role vocabulary (issue #53).
 	//
-	//lint:ignore U1000 contract vocabulary: the role name is reserved for the action route.
+	//lint:ignore U1000 schema role vocabulary; action ops are selected by name, not by role (#53).
 	roleAction = "action"
 )
 
