@@ -6,6 +6,16 @@ OCI-key entitlement/provisioning) · **Relay is read-only from here** — see
 [relay-requirements.md](../relay-requirements.md) (R1, R2) and
 [host-functions.md](host-functions.md).
 
+> **Felülírva (O-1 WP-04, 2026-11-27).** Az alábbi `sign` + `actuate` felosztás **történeti**: a modul
+> mostantól egyetlen host-importot használ, a `cic-flow.send`-et. A guest **strukturált kérést** küld
+> (`method`, `host`, `path`, `intent{operation, resource_id, binding_digest}`, törzs); a kanonikus
+> karakterláncot, a `date`-et, a tartalom-digestet, az aláírást és az `Authorization` fejlécet a **host**
+> állítja elő (D-11, `pkg/hostsign` + `pkg/hostsign/ociprofile` a Relay-ben), a célt a host az operátori
+> policy ellen validálja **aláírás előtt**. A guest sosem kap aláírást vagy `Authorization`-t. A normatív
+> szerződés a Relay O-1 `03-sign-send-contract.md` (§3–§8, §12). Az `abi.imports` ezért `cic-flow: [send]`.
+> A `module/oci_sign.go` (guest-oldali kanonikus karakterlánc) megszűnt; a teszt-oldali host-mock
+> (`module/host_mock_test.go`) tartja a régi képletet kizárólag a Relay szerepének szimulálásához.
+
 > **As-built note.** The relay implemented this with two deltas from the original
 > proposal below, now the authoritative contract:
 > 1. **ABI** — the `git` host-module convention

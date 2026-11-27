@@ -2,8 +2,7 @@
 
 package main
 
-// cicflow_guest.go binds the relay's `cic-flow` host module (R1/R2, landed in
-// CIC_Relay#91). The ABI is the `git` host-module convention: a JSON request at
+// cicflow_guest.go binds the relay's `cic-flow` host module (cic-flow.send, O-1 WP-04). The ABI is the `git` host-module convention: a JSON request at
 // (reqPtr, reqLen), a JSON response written into a guest-allocated buffer at
 // (outPtr, outLen), and a return of bytes written or -1 (did not fit / memory
 // error). A host-side failure is an {"error": "..."} JSON body with a positive
@@ -14,11 +13,8 @@ import (
 	"unsafe"
 )
 
-//go:wasmimport cic-flow sign
-func wasmCicFlowSign(reqPtr, reqLen, outPtr, outLen uint32) int32
-
-//go:wasmimport cic-flow actuate
-func wasmCicFlowActuate(reqPtr, reqLen, outPtr, outLen uint32) int32
+//go:wasmimport cic-flow send
+func wasmCicFlowSend(reqPtr, reqLen, outPtr, outLen uint32) int32
 
 // cicFlowOutCap is the response buffer the guest allocates per host call. OCI
 // bodies are small (a VCN/subnet is a few KiB); 256 KiB is ample headroom.
@@ -44,12 +40,9 @@ func hostCall(fn func(uint32, uint32, uint32, uint32) int32, req []byte) ([]byte
 	return out, nil
 }
 
-// A //go:wasmimport function cannot be used as a value, so wrap each in a plain
-// closure before handing it to hostCall.
-func callHostSign(req []byte) ([]byte, error) {
-	return hostCall(func(rp, rl, op, ol uint32) int32 { return wasmCicFlowSign(rp, rl, op, ol) }, req)
-}
-
-func callHostActuate(req []byte) ([]byte, error) {
-	return hostCall(func(rp, rl, op, ol uint32) int32 { return wasmCicFlowActuate(rp, rl, op, ol) }, req)
+// A //go:wasmimport function cannot be used as a value, so wrap it in a plain
+// closure before handing it to hostCall. cic-flow.send is the ONLY host import for the
+// sign+send operations: there is no raw sign or actuate import (D-11, WP-04).
+func callHostSend(req []byte) ([]byte, error) {
+	return hostCall(func(rp, rl, op, ol uint32) int32 { return wasmCicFlowSend(rp, rl, op, ol) }, req)
 }

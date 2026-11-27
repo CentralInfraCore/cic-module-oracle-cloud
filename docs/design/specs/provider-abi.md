@@ -140,7 +140,7 @@ overwrite.
 ## `abi.schema.yaml` extension (P0.3) · done
 
 `abi.schema.yaml` now has an optional `imports` surface and `project.yaml`
-declares `abi.imports` (`cic-flow`: `sign`/`actuate`, provisional). `describe()`
+declares `abi.imports` (`cic-flow`: `send` — O-1 WP-04; a korábbi `sign`/`actuate` felosztás megszűnt). `describe()`
 reports it, so the host can read the module's required sign+send surface. It is a
 **declaration** — the names are settled with the relay when the host surface
 lands (R1/R2), and nothing is imported at the wasm level yet (WASI-off; the
@@ -155,7 +155,7 @@ abi:
     # is native-FFI only and Bearer-based. The concrete host surface (a
     # sign-then-send capability for OCI) is a relay requirement, not a given.
     - module: cic-flow          # exact module/function names TBD with the relay
-      functions: [sign, actuate]
+      functions: [send]   # O-1 WP-04: host-side sign+send; the guest holds no raw sign/actuate
 ```
 
 The exact import names are settled with the relay when the host surface lands —

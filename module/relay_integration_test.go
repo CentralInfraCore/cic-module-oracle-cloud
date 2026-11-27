@@ -307,9 +307,18 @@ func loadWithCICFlow(t *testing.T, wasmBytes []byte, sign, actuate func([]byte) 
 			return int32(len(resp))
 		}
 	}
+	// The mock relay host (host_mock_test.go) does what the relay does: it builds the canonical string, signs
+	// through `sign` and sends through `actuate`; the guest only ever sees the cic-flow.send answer.
+	oldSign, oldAct := testCallHostSign, testCallHostActuate
+	testCallHostSign = func(req []byte) ([]byte, error) { return sign(req), nil }
+	testCallHostActuate = func(req []byte) ([]byte, error) { return actuate(req), nil }
+	t.Cleanup(func() { testCallHostSign, testCallHostActuate = oldSign, oldAct })
+	send := func(req []byte) []byte {
+		out, _ := mockRelaySend(req)
+		return out
+	}
 	if _, err := rt.NewHostModuleBuilder("cic-flow").
-		NewFunctionBuilder().WithFunc(adapt(sign)).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("sign").
-		NewFunctionBuilder().WithFunc(adapt(actuate)).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("actuate").
+		NewFunctionBuilder().WithFunc(adapt(send)).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("send").
 		Instantiate(ctx); err != nil {
 		t.Fatalf("cic-flow host module: %v", err)
 	}

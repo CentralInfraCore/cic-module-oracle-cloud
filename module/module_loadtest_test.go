@@ -66,7 +66,7 @@ func loadModule(t *testing.T) (context.Context, api.Module, api.Function, api.Fu
 		t.Fatalf("failed to instantiate wasi: %v", err)
 	}
 
-	// The guest imports the relay's cic-flow host module (sign/actuate). Register
+	// The guest imports the relay's cic-flow host module (send). Register
 	// a stub so instantiation succeeds; tests that do not exercise execute never
 	// call it. TestHostLoadExecute builds its own runtime with a capturing mock.
 	stub := func(ctx context.Context, mod api.Module, reqPtr, reqLen, outPtr, outLen uint32) int32 {
@@ -77,8 +77,7 @@ func loadModule(t *testing.T) (context.Context, api.Module, api.Function, api.Fu
 		return int32(len(resp))
 	}
 	if _, err := runtime.NewHostModuleBuilder("cic-flow").
-		NewFunctionBuilder().WithFunc(stub).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("sign").
-		NewFunctionBuilder().WithFunc(stub).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("actuate").
+		NewFunctionBuilder().WithFunc(stub).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("send").
 		Instantiate(ctx); err != nil {
 		t.Fatalf("failed to instantiate cic-flow stub: %v", err)
 	}
@@ -316,8 +315,8 @@ func TestHostLoadExecute(t *testing.T) {
 		t.Fatalf("wasi: %v", err)
 	}
 
-	var signedString, actuateReq string
-	// One host-func adapter for the git/cic-flow ABI: read req JSON, hand it to
+	var sendReq string
+	// One host-func adapter for the cic-flow ABI: read req JSON, hand it to
 	// handler, write the response, return bytes written (or -1 if it overruns).
 	adapt := func(handler func(req []byte) []byte) func(context.Context, api.Module, uint32, uint32, uint32, uint32) int32 {
 		return func(ctx context.Context, mod api.Module, reqPtr, reqLen, outPtr, outLen uint32) int32 {
@@ -334,24 +333,18 @@ func TestHostLoadExecute(t *testing.T) {
 	}
 	_, err = rt.NewHostModuleBuilder("cic-flow").
 		NewFunctionBuilder().WithFunc(adapt(func(req []byte) []byte {
-		var r struct {
-			DataBase64 string `json:"data_base64"`
-		}
-		json.Unmarshal(req, &r)
-		raw, _ := base64.StdEncoding.DecodeString(r.DataBase64)
-		signedString = string(raw)
-		out, _ := json.Marshal(map[string]string{"signature": "FAKESIG=="})
-		return out
-	})).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("sign").
-		NewFunctionBuilder().WithFunc(adapt(func(req []byte) []byte {
-		actuateReq = string(req)
+		sendReq = string(req)
 		out, _ := json.Marshal(map[string]interface{}{
-			"status":      200,
-			"headers":     map[string]string{"etag": "etag-1", "opc-request-id": "req-1"},
-			"body_base64": base64.StdEncoding.EncodeToString([]byte("{}")),
+			"v": 1, "outcome": "completed",
+			"http": map[string]interface{}{
+				"status":      200,
+				"headers":     map[string]string{"etag": "etag-1", "opc-request-id": "req-1"},
+				"body_base64": base64.StdEncoding.EncodeToString([]byte("{}")),
+				"body_sha256": "sha256:" + strings.Repeat("0", 64),
+			},
 		})
 		return out
-	})).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("actuate").
+	})).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("send").
 		Instantiate(ctx)
 	if err != nil {
 		t.Fatalf("cic-flow host module: %v", err)
@@ -413,19 +406,31 @@ func TestHostLoadExecute(t *testing.T) {
 		t.Errorf("step = %+v, want UpdateVcn/200/etag-1/no-error", s)
 	}
 
-	// The guest signed the OCI canonical string with the templated path...
-	if !strings.Contains(signedString, "(request-target): put /vcns/ocid1.vcn.oc1..xyz") {
-		t.Errorf("signed string missing templated request-target:\n%s", signedString)
+	// The guest sent ONE structured request through the real wasmimport surface: method, host, templated
+	// path, intent, body. It carries no signature, Authorization, date, canonical string or key.
+	var sr map[string]any
+	if err := json.Unmarshal([]byte(sendReq), &sr); err != nil {
+		t.Fatalf("send request is not JSON: %v\n%s", err, sendReq)
 	}
-	if !strings.Contains(signedString, "host: iaas.eu-frankfurt-1.oraclecloud.com") {
-		t.Errorf("signed string missing host header:\n%s", signedString)
+	rq, _ := sr["request"].(map[string]any)
+	if rq["method"] != "PUT" || rq["host"] != "iaas.eu-frankfurt-1.oraclecloud.com" || rq["path"] != "/vcns/ocid1.vcn.oc1..xyz" {
+		t.Errorf("structured request wrong: %v", rq)
 	}
-	// ...and actuated to the concrete URL carrying its own Signature Authorization.
-	if !strings.Contains(actuateReq, `"url":"https://iaas.eu-frankfurt-1.oraclecloud.com/vcns/ocid1.vcn.oc1..xyz"`) {
-		t.Errorf("actuate URL wrong:\n%s", actuateReq)
+	in, _ := sr["intent"].(map[string]any)
+	if in["operation"] != "execute" || in["resource_id"] != "ocid1.vcn.oc1..xyz" {
+		t.Errorf("intent wrong: %v", in)
 	}
-	if !strings.Contains(actuateReq, `keyId=\"tenancy/user/fp\"`) || !strings.Contains(actuateReq, "FAKESIG==") {
-		t.Errorf("actuate Authorization missing keyId/signature:\n%s", actuateReq)
+	if sr["signing_profile"] != "http-signature:oci:draft-cavage@1" || sr["key_ref"] != "oci/default" {
+		t.Errorf("profile/key_ref wrong: %v / %v", sr["signing_profile"], sr["key_ref"])
+	}
+	walkJSONKeys(sr, func(k string) {
+		switch strings.ToLower(k) {
+		case "authorization", "signature", "date", "x-content-sha256", "content-length":
+			t.Errorf("the guest request carries the host-owned field %q:\n%s", k, sendReq)
+		}
+	})
+	if strings.Contains(sendReq, "request-target") || strings.Contains(sendReq, "FAKESIG") {
+		t.Errorf("the guest must not build signing material:\n%s", sendReq)
 	}
 }
 

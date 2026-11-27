@@ -160,7 +160,7 @@ func Describe(auth, data []byte) ([]byte, error) {
 		// The sign+send host surface this module requires (project.yaml
 		// abi.imports). Provisional until settled with the relay (R1/R2).
 		Imports: []importReq{
-			{Module: "cic-flow", Functions: []string{"sign", "actuate"}},
+			{Module: "cic-flow", Functions: []string{"send"}},
 		},
 		RequiredCapabilities: capReq{
 			EgressHosts: []string{"*.oraclecloud.com"},
@@ -591,7 +591,7 @@ func Destroy(auth, data []byte) ([]byte, error) {
 	if perr != nil {
 		return errResult(perr)
 	}
-	status, headers, respBody, err := actuateSigned(op.method, req.Binding.Host, opPath(req.Binding, op.path), req.Binding.KeyID, nil, nowFunc().Format(ociTimeFormat), req.Binding.Revision)
+	status, headers, respBody, err := actuateSigned("destroy", req.Binding, op.method, opPath(req.Binding, op.path), nil, req.Binding.Revision)
 	if err != nil {
 		return errResult(&providerError{Class: classTransport, Message: err.Error()})
 	}
@@ -671,7 +671,7 @@ func Invoke(auth, data []byte) ([]byte, error) {
 		body = []byte("{}")
 	}
 	path := opPath(req.Binding, op.path)
-	status, headers, respBody, err := actuateSigned(op.method, req.Binding.Host, path, req.Binding.KeyID, body, nowFunc().Format(ociTimeFormat), req.Binding.Revision)
+	status, headers, respBody, err := actuateSigned("invoke", req.Binding, op.method, path, body, req.Binding.Revision)
 	if err != nil {
 		return errResult(&providerError{Class: classTransport, Message: err.Error()})
 	}
@@ -720,7 +720,7 @@ func Poll(auth, data []byte) ([]byte, error) {
 	if req.Binding.Host == "" || req.Binding.KeyID == "" || req.Path == "" {
 		return errResult(&providerError{Class: classValidation, FieldPath: "binding/path", Message: "binding.host, binding.key_id and path are required"})
 	}
-	status, _, respBody, err := actuateSigned("GET", req.Binding.Host, req.Path, req.Binding.KeyID, nil, nowFunc().Format(ociTimeFormat), "")
+	status, _, respBody, err := actuateSigned("poll", req.Binding, "GET", req.Path, nil, "")
 	if err != nil {
 		return errResult(&providerError{Class: classTransport, Message: err.Error()})
 	}
@@ -822,8 +822,7 @@ func Observe(auth, data []byte) ([]byte, error) {
 	}
 
 	path := opPath(req.Binding, getOp.path)
-	date := nowFunc().Format(ociTimeFormat)
-	status, headers, respBody, err := actuateSigned(getOp.method, req.Binding.Host, path, req.Binding.KeyID, nil, date, "")
+	status, headers, respBody, err := actuateSigned("observe", req.Binding, getOp.method, path, nil, "")
 	if err != nil {
 		return errResult(&providerError{Class: classTransport, Message: err.Error()})
 	}
@@ -846,7 +845,7 @@ func Observe(auth, data []byte) ([]byte, error) {
 			ResourceID:   req.Binding.ResourceID,
 			Etag:         headers["etag"],
 			OpcRequestID: headers["opc-request-id"],
-			ObservedAt:   date,
+			ObservedAt:   nowFunc().Format(observedAtFormat),
 		},
 	})
 }
@@ -879,11 +878,14 @@ type executeRequest struct {
 // tenancy/user/fingerprint), and the target resource id for path templating.
 // Not secret; supplied with the intent.
 type execBinding struct {
-	Host       string `json:"host"`        // e.g. iaas.eu-frankfurt-1.oraclecloud.com
-	BasePath   string `json:"base_path"`   // OCI API version prefix, e.g. /20160918 (core); prepended to op paths
-	KeyID      string `json:"key_id"`      // <tenancyOCID>/<userOCID>/<fingerprint>
-	ResourceID string `json:"resource_id"` // ocid1.vcn... — fills {vcnId}/{subnetId} path params
-	Revision   string `json:"revision"`    // observed etag; sent as If-Match on mutations (optimistic concurrency)
+	Host     string `json:"host"`      // e.g. iaas.eu-frankfurt-1.oraclecloud.com
+	BasePath string `json:"base_path"` // OCI API version prefix, e.g. /20160918 (core); prepended to op paths
+	KeyID    string `json:"key_id"`    // <tenancyOCID>/<userOCID>/<fingerprint>; informational: the HOST owns the key identifier, the guest never builds an Authorization header
+	// BindingDigest is the digest of the deployment-policy binding of ResourceID. It is supplied by the caller
+	// (never derived here) and validated by the host against the operator policy before anything is signed.
+	BindingDigest string `json:"binding_digest"`
+	ResourceID    string `json:"resource_id"` // ocid1.vcn... — fills {vcnId}/{subnetId} path params
+	Revision      string `json:"revision"`    // observed etag; sent as If-Match on mutations (optimistic concurrency)
 }
 
 // opPath is the full request path for an operation: the API version prefix from
@@ -941,6 +943,10 @@ func ociError(status int, body []byte) *providerError {
 	return pe
 }
 
+// observedAtFormat is the RFC 1123 GMT layout of provider_metadata.observed_at (an observation timestamp; it is
+// NOT a request header: the request date is set by the host).
+const observedAtFormat = "Mon, 02 Jan 2006 15:04:05 GMT"
+
 // nowFunc is the clock, injectable for deterministic tests.
 var nowFunc = func() time.Time { return time.Now().UTC() }
 
@@ -966,11 +972,10 @@ func Execute(auth, data []byte) ([]byte, error) {
 		return errResult(&providerError{Class: classSchema, FieldPath: "config.data", Message: err.Error()})
 	}
 
-	date := nowFunc().Format(ociTimeFormat)
 	result := executionResult{Status: "succeeded"}
 	async := false
 	for _, po := range req.Plan.ProviderOperations {
-		step, fatal := executeOne(c, po, config, req.Binding, date)
+		step, fatal := executeOne(c, po, config, req.Binding)
 		result.Steps = append(result.Steps, step)
 		if step.WorkRequestID != "" {
 			async = true
@@ -988,13 +993,13 @@ func Execute(auth, data []byte) ([]byte, error) {
 	return okResult(result)
 }
 
-// executeOne runs a single provider operation: render → sign → actuate. fatal is
+// executeOne runs a single provider operation: render → cic-flow.send (the host signs and sends). fatal is
 // true when the step failed and the plan must stop.
-func executeOne(c resourceContract, po providerOperation, config map[string]json.RawMessage, b execBinding, date string) (executionStep, bool) {
+func executeOne(c resourceContract, po providerOperation, config map[string]json.RawMessage, b execBinding) (executionStep, bool) {
 	step := executionStep{Operation: po.Operation}
 	body := renderBody(c, po, config)
 
-	status, headers, respBody, err := actuateSigned(po.Method, b.Host, opPath(b, po.Path), b.KeyID, body, date, b.Revision)
+	status, headers, respBody, err := actuateSigned("execute", b, po.Method, opPath(b, po.Path), body, b.Revision)
 	if err != nil {
 		step.Error = err.Error()
 		return step, true
@@ -1013,55 +1018,109 @@ func executeOne(c resourceContract, po providerOperation, config map[string]json
 	return step, false
 }
 
-// actuateSigned is the shared sign-then-send core used by execute and observe:
-// build the OCI canonical string, cic-flow.sign it, assemble the Authorization
-// header, cic-flow.actuate, and return the decoded response. The key never
-// enters the guest; the host enforces egress + scope.
-func actuateSigned(method, host, path, keyID string, body []byte, date, ifMatch string) (status int, headers map[string]string, respBody []byte, err error) {
-	canonical, signedHeaders, wire := ociCanonical(method, host, path, date, body)
+// ociSigningProfile and ociKeyRef are the identifiers the guest names in a cic-flow.send request. The signing
+// profile is a host-side component (D-11): the guest does not build the canonical string, the date, the
+// content digest or the Authorization header, and it never names a key or a key identifier beyond the
+// manifest handle.
+const (
+	ociSigningProfile = "http-signature:oci:draft-cavage@1"
+	ociKeyRef         = "oci/default"
+)
 
-	sigReq, _ := json.Marshal(map[string]string{"data_base64": base64.StdEncoding.EncodeToString([]byte(canonical))})
-	sigRaw, err := callHostSign(sigReq)
-	if err != nil {
-		return 0, nil, nil, fmt.Errorf("sign: %s", err.Error())
-	}
-	var sig struct {
-		Signature string `json:"signature"`
-		Error     string `json:"error"`
-	}
-	json.Unmarshal(sigRaw, &sig)
-	if sig.Error != "" || sig.Signature == "" {
-		return 0, nil, nil, fmt.Errorf("sign: %s", firstNonEmpty(sig.Error, "empty signature"))
-	}
+// sendRequest is the structured cic-flow.send request (wire: sign-send-request.schema.json). It has no field for
+// a signature, an Authorization header, a date, a limit or a key.
+type sendRequest struct {
+	V              int        `json:"v"`
+	SigningProfile string     `json:"signing_profile"`
+	KeyRef         string     `json:"key_ref"`
+	Request        sendHTTP   `json:"request"`
+	Intent         sendIntent `json:"intent"`
+}
 
-	wire["authorization"] = ociAuthorization(keyID, signedHeaders, sig.Signature)
-	// If-Match (optimistic concurrency) is a wire header, not a signed one — OCI
-	// signs only its fixed header set; extra headers travel unsigned.
-	if ifMatch != "" {
-		wire["if-match"] = ifMatch
-	}
-	actReq, _ := json.Marshal(map[string]interface{}{
-		"method":      method,
-		"url":         "https://" + host + path,
-		"headers":     wire,
-		"body_base64": base64.StdEncoding.EncodeToString(body),
-	})
-	actRaw, err := callHostActuate(actReq)
-	if err != nil {
-		return 0, nil, nil, fmt.Errorf("actuate: %s", err.Error())
-	}
-	var act struct {
+type sendHTTP struct {
+	Method  string            `json:"method"`
+	Host    string            `json:"host"`
+	Path    string            `json:"path"`
+	Query   map[string]string `json:"query,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Body    *sendBody         `json:"body,omitempty"`
+}
+
+type sendBody struct {
+	Base64 string `json:"base64"`
+}
+
+type sendIntent struct {
+	Operation     string `json:"operation"`
+	ResourceID    string `json:"resource_id"`
+	BindingDigest string `json:"binding_digest"`
+}
+
+// sendResponse is the part of the cic-flow.send answer the guest reads. A host-level error (not a v1 answer)
+// arrives as {"error","code"}.
+type sendResponse struct {
+	Outcome string `json:"outcome"`
+	Denial  *struct {
+		Code   string `json:"code"`
+		Detail string `json:"detail"`
+	} `json:"denial"`
+	Failure *struct {
+		Code   string `json:"code"`
+		Detail string `json:"detail"`
+	} `json:"failure"`
+	HTTP *struct {
 		Status     int               `json:"status"`
 		Headers    map[string]string `json:"headers"`
 		BodyBase64 string            `json:"body_base64"`
-		Error      string            `json:"error"`
+	} `json:"http"`
+	Error string `json:"error"`
+	Code  string `json:"code"`
+}
+
+// actuateSigned is the shared sign+send core used by every host-touching operation: it describes the request
+// structurally (method, host, path, intent, body) and hands it to cic-flow.send. The host validates the target
+// against the operator policy, builds the canonical string, signs with a key the guest cannot name, sends, and
+// answers with the HTTP result only. operation is the ABI operation name carried as the intent.
+func actuateSigned(operation string, b execBinding, method, path string, body []byte, ifMatch string) (status int, headers map[string]string, respBody []byte, err error) {
+	hr := sendHTTP{Method: method, Host: b.Host, Path: path}
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		hr.Path = path[:i]
+		hr.Query = map[string]string{}
+		for _, kv := range strings.Split(path[i+1:], "&") {
+			k, v, _ := strings.Cut(kv, "=")
+			hr.Query[k] = v
+		}
 	}
-	json.Unmarshal(actRaw, &act)
-	if act.Error != "" {
-		return 0, nil, nil, fmt.Errorf("actuate: %s", act.Error)
+	if ifMatch != "" {
+		hr.Headers = map[string]string{"if-match": ifMatch}
 	}
-	respBody, _ = base64.StdEncoding.DecodeString(act.BodyBase64)
-	return act.Status, act.Headers, respBody, nil
+	if len(body) > 0 {
+		hr.Body = &sendBody{Base64: base64.StdEncoding.EncodeToString(body)}
+	}
+	reqJSON, _ := json.Marshal(sendRequest{
+		V: 1, SigningProfile: ociSigningProfile, KeyRef: ociKeyRef, Request: hr,
+		Intent: sendIntent{Operation: operation, ResourceID: b.ResourceID, BindingDigest: b.BindingDigest},
+	})
+	raw, err := callHostSend(reqJSON)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("send: %s", err.Error())
+	}
+	var resp sendResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return 0, nil, nil, fmt.Errorf("send: unreadable host answer")
+	}
+	switch {
+	case resp.Error != "":
+		return 0, nil, nil, fmt.Errorf("send: %s", resp.Error)
+	case resp.Outcome == "denied" && resp.Denial != nil:
+		return 0, nil, nil, fmt.Errorf("send denied: %s", resp.Denial.Code)
+	case resp.Outcome == "failed" && resp.Failure != nil:
+		return 0, nil, nil, fmt.Errorf("send failed: %s", resp.Failure.Code)
+	case resp.Outcome == "completed" && resp.HTTP != nil:
+		respBody, _ = base64.StdEncoding.DecodeString(resp.HTTP.BodyBase64)
+		return resp.HTTP.Status, resp.HTTP.Headers, respBody, nil
+	}
+	return 0, nil, nil, fmt.Errorf("send: unexpected host answer")
 }
 
 // renderBody builds the OCI request body for one operation from the desired

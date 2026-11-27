@@ -10,21 +10,12 @@ package main
 
 import "errors"
 
-var (
-	testCallHostSign    func(req []byte) ([]byte, error)
-	testCallHostActuate func(req []byte) ([]byte, error)
-)
+// testCallHostSend is the injectable cic-flow.send host call for host-side tests.
+var testCallHostSend func(req []byte) ([]byte, error)
 
-func callHostSign(req []byte) ([]byte, error) {
-	if testCallHostSign != nil {
-		return testCallHostSign(req)
+func callHostSend(req []byte) ([]byte, error) {
+	if testCallHostSend != nil {
+		return testCallHostSend(req)
 	}
-	return nil, errors.New("cic-flow.sign unavailable on host")
-}
-
-func callHostActuate(req []byte) ([]byte, error) {
-	if testCallHostActuate != nil {
-		return testCallHostActuate(req)
-	}
-	return nil, errors.New("cic-flow.actuate unavailable on host")
+	return nil, errors.New("cic-flow.send unavailable on host")
 }
