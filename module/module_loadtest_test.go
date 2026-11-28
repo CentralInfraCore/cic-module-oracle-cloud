@@ -121,8 +121,7 @@ func loadModule(t *testing.T) (context.Context, api.Module, api.Function, api.Fu
 		return int32(len(resp))
 	}
 	if _, err := runtime.NewHostModuleBuilder("cic-flow").
-		NewFunctionBuilder().WithFunc(stub).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("sign").
-		NewFunctionBuilder().WithFunc(stub).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("actuate").
+		NewFunctionBuilder().WithFunc(stub).WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("send").
 		Instantiate(ctx); err != nil {
 		t.Fatalf("failed to instantiate cic-flow stub: %v", err)
 	}
@@ -395,21 +394,30 @@ func TestHostLoadExecute(t *testing.T) {
 		t.Errorf("step = %+v, want UpdateVcn/200/etag-1/no-error", s)
 	}
 
-	// The guest signed the OCI canonical string with the templated path...
-	signedString := mock.Signed[0]
-	actuateReq := mock.lastActuate(t).Raw
-	if !strings.Contains(signedString, "(request-target): put /vcns/ocid1.vcn.oc1..xyz") {
-		t.Errorf("signed string missing templated request-target:\n%s", signedString)
+	// Over the REAL wasmimport surface the guest sent exactly one cic-flow.send request, and it is
+	// structural: method, host, templated path and intent. What the guest no longer produces is
+	// asserted negatively below; that the HOST then builds the canonical string and the
+	// Authorization header is the relay's property, pinned by the relay's own ociprofile tests
+	// (see the WP-04b claim-mapping), not by this module test.
+	sent := mock.lastSend(t)
+	if mock.sendCount() != 1 {
+		t.Fatalf("%d cic-flow.send calls, want exactly 1", mock.sendCount())
 	}
-	if !strings.Contains(signedString, "host: iaas.eu-frankfurt-1.oraclecloud.com") {
-		t.Errorf("signed string missing host header:\n%s", signedString)
+	if sent.Method != "PUT" || sent.Host != "iaas.eu-frankfurt-1.oraclecloud.com" || sent.Path != "/vcns/ocid1.vcn.oc1..xyz" {
+		t.Errorf("structured request = %s %s %s, want PUT iaas.eu-frankfurt-1.oraclecloud.com /vcns/ocid1.vcn.oc1..xyz",
+			sent.Method, sent.Host, sent.Path)
 	}
-	// ...and actuated to the concrete URL carrying its own Signature Authorization.
-	if !strings.Contains(actuateReq, `"url":"https://iaas.eu-frankfurt-1.oraclecloud.com/vcns/ocid1.vcn.oc1..xyz"`) {
-		t.Errorf("actuate URL wrong:\n%s", actuateReq)
+	if sent.Operation != "execute" || sent.ResourceID != "ocid1.vcn.oc1..xyz" {
+		t.Errorf("intent = %q/%q, want execute/ocid1.vcn.oc1..xyz", sent.Operation, sent.ResourceID)
 	}
-	if !strings.Contains(actuateReq, `keyId=\"tenancy/user/fp\"`) || !strings.Contains(actuateReq, "FAKESIG==") {
-		t.Errorf("actuate Authorization missing keyId/signature:\n%s", actuateReq)
+	if sent.SigningProfile != "http-signature:oci:draft-cavage@1" || sent.KeyRef != "oci/default" {
+		t.Errorf("signing_profile/key_ref = %q/%q", sent.SigningProfile, sent.KeyRef)
+	}
+	// The request the guest built over the real wasm boundary carries no signing material at all.
+	for _, bad := range []string{"request-target", "authorization", "FAKESIG", "rsa-sha256", "x-content-sha256", "\"date\""} {
+		if strings.Contains(strings.ToLower(sent.Raw), strings.ToLower(bad)) {
+			t.Errorf("the guest request carries the host-owned %q:\n%s", bad, sent.Raw)
+		}
 	}
 }
 

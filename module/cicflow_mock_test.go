@@ -7,19 +7,28 @@ package main
 // in TestHostLoadExecute, where the response was hard-wired to 200 + "{}" and
 // only the last request was kept.
 //
-// Three things it adds, all needed to assert the execute result honestly:
+// Four things it adds, all needed to assert the execute result honestly:
 //   - a per-call responder, so a test can answer a create with a real body, a
 //     malformed body, or an error status;
-//   - every sign and actuate request recorded IN ORDER, so a test can check what
-//     the guest actually sent rather than only what came back;
+//   - every send request the GUEST made recorded IN ORDER and structurally, so a
+//     test can check what the guest actually asked for (method, path, intent)
+//     rather than only what came back;
+//   - every sign and actuate step of the SIMULATED HOST recorded in order, so the
+//     old assertions about what left the host still have a subject;
 //   - request COUNTS, so a test can assert how many provider requests a run made
 //     — the only way to prove the module does not retry a create behind the
 //     caller's back (a blind retry would duplicate the resource).
 //
-// The host-function ABI mirrored here is the relay's real one (R1/R2,
-// CIC_Relay#91): (req_ptr,req_len,out_ptr,out_len)->i32 with JSON in linear
-// memory, bytes-written or -1. It is a mock of the relay's interface, never a
-// stand-in for the relay itself: nothing here signs or sends anything.
+// Since O-1 WP-04 the guest's single host import is cic-flow.send, so the mock's
+// entry point is handleSend. The sign-then-send steps behind it belong to the
+// simulated relay (host_mock_test.go: mockRelaySend), not to the guest; the mock
+// keeps recording them because "nothing was signed" and "nothing was sent" are
+// exactly the properties the gate tests assert.
+//
+// The host-function ABI mirrored here is the relay's real one:
+// (req_ptr,req_len,out_ptr,out_len)->i32 with JSON in linear memory,
+// bytes-written or -1. It is a mock of the relay's interface, never a stand-in
+// for the relay itself: nothing here signs or sends anything for real.
 
 import (
 	"context"
@@ -32,7 +41,26 @@ import (
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
-// cicFlowCall is one recorded cic-flow.actuate request, as the guest sent it.
+// cicFlowSend is one recorded cic-flow.send request, exactly as the GUEST sent it. This is the
+// production-side record: every field here was produced by provider.go.
+type cicFlowSend struct {
+	V              int
+	SigningProfile string
+	KeyRef         string
+	Method         string
+	Host           string
+	Path           string
+	Query          map[string]string
+	Headers        map[string]string
+	Body           []byte // decoded from request.body.base64
+	Operation      string // intent.operation
+	ResourceID     string // intent.resource_id
+	BindingDigest  string // intent.binding_digest
+	Raw            string // the verbatim request JSON, for substring assertions
+}
+
+// cicFlowCall is one recorded request the SIMULATED HOST put on the wire (the host's own
+// actuate step), including the Authorization header the host built.
 type cicFlowCall struct {
 	Method  string
 	URL     string
@@ -57,13 +85,73 @@ type cicFlowMock struct {
 	// Reply answers actuate call n (1-based). Nil means 200 with an empty JSON
 	// object — the old inlined mock's behaviour.
 	Reply func(n int, call cicFlowCall) cicFlowReply
+	// Refuse, when set, decides whether the simulated host refuses send call n (1-based) BEFORE
+	// signing or sending anything, the way the relay refuses a target outside the operator policy.
+	// An empty code means "admit this call". outcome is "denied" (default) or "failed".
+	Refuse func(n int, call cicFlowSend) (outcome, code, detail string)
 
-	Signed   []string      // canonical strings passed to sign, in order
-	Actuated []cicFlowCall // actuate requests, in order
+	Sent     []cicFlowSend // the GUEST's send requests, in order
+	Signed   []string      // canonical strings the simulated host signed, in order
+	Actuated []cicFlowCall // requests the simulated host put on the wire, in order
 }
 
+func (m *cicFlowMock) sendCount() int    { return len(m.Sent) }
 func (m *cicFlowMock) signCount() int    { return len(m.Signed) }
 func (m *cicFlowMock) actuateCount() int { return len(m.Actuated) }
+
+// lastSend is the most recent cic-flow.send request the guest made; it fails the test if there
+// was none, so a silent zero value can never be mistaken for a real request.
+func (m *cicFlowMock) lastSend(t *testing.T) cicFlowSend {
+	t.Helper()
+	if len(m.Sent) == 0 {
+		t.Fatalf("no cic-flow.send request was made")
+	}
+	return m.Sent[len(m.Sent)-1]
+}
+
+// handleSend is the mock's cic-flow.send entry point: record the guest's structured request, give
+// the test a chance to refuse it with a named contract code, and otherwise let the simulated relay
+// sign and send it.
+func (m *cicFlowMock) handleSend(req []byte) []byte {
+	var in wireSendRequest
+	_ = json.Unmarshal(req, &in)
+	var body []byte
+	if in.Request.Body != nil {
+		body, _ = base64.StdEncoding.DecodeString(in.Request.Body.Base64)
+	}
+	call := cicFlowSend{
+		V: in.V, SigningProfile: in.SigningProfile, KeyRef: in.KeyRef,
+		Method: in.Request.Method, Host: in.Request.Host, Path: in.Request.Path,
+		Query: in.Request.Query, Headers: in.Request.Headers, Body: body,
+		Operation: in.Intent.Operation, ResourceID: in.Intent.ResourceID,
+		BindingDigest: in.Intent.BindingDigest, Raw: string(req),
+	}
+	m.Sent = append(m.Sent, call)
+
+	if m.Refuse != nil {
+		outcome, code, detail := m.Refuse(len(m.Sent), call)
+		if code != "" {
+			if outcome == "failed" {
+				return mockFailed(code, detail)
+			}
+			return mockDenied(code, detail)
+		}
+	}
+	// The simulated relay signs and sends through this mock's own sign/actuate steps.
+	restore := m.wireMockHostSteps()
+	defer restore()
+	out, _ := mockRelaySend(req)
+	return out
+}
+
+// wireMockHostSteps points the simulated host's signer and transport at this mock, leaving any
+// previously wired ones restorable.
+func (m *cicFlowMock) wireMockHostSteps() (restore func()) {
+	oldSign, oldAct := testCallHostSign, testCallHostActuate
+	testCallHostSign = func(req []byte) ([]byte, error) { return m.handleSign(req), nil }
+	testCallHostActuate = func(req []byte) ([]byte, error) { return m.handleActuate(req), nil }
+	return func() { testCallHostSign, testCallHostActuate = oldSign, oldAct }
+}
 
 // lastActuate is the most recent actuate request; it fails the test if there was
 // none, so a silent zero value can never be mistaken for a real request.
@@ -122,13 +210,13 @@ func (m *cicFlowMock) handleActuate(req []byte) []byte {
 	return out
 }
 
-// wireHostSeam points the host-build (non-wasm) cic-flow seam at this mock, for
-// the fast unit tests that call Execute/Observe directly. The caller defers the
-// returned restore func.
+// wireHostSeam points the host-build (non-wasm) cic-flow.send seam at this mock, for the fast unit
+// tests that call Execute/Observe directly. The caller defers the returned restore func. The guest
+// has exactly one seam now, so this wires exactly one function.
 func (m *cicFlowMock) wireHostSeam() (restore func()) {
-	testCallHostSign = func(req []byte) ([]byte, error) { return m.handleSign(req), nil }
-	testCallHostActuate = func(req []byte) ([]byte, error) { return m.handleActuate(req), nil }
-	return func() { testCallHostSign = nil; testCallHostActuate = nil }
+	old := testCallHostSend
+	testCallHostSend = func(req []byte) ([]byte, error) { return m.handleSend(req), nil }
+	return func() { testCallHostSend = old }
 }
 
 // adaptCicFlow wraps a JSON request/response handler as a wazero host function
@@ -174,10 +262,8 @@ func loadGuestWithCicFlow(t *testing.T, mock *cicFlowMock) (context.Context, api
 		t.Fatalf("wasi: %v", err)
 	}
 	if _, err := rt.NewHostModuleBuilder("cic-flow").
-		NewFunctionBuilder().WithFunc(adaptCicFlow(mock.handleSign)).
-		WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("sign").
-		NewFunctionBuilder().WithFunc(adaptCicFlow(mock.handleActuate)).
-		WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("actuate").
+		NewFunctionBuilder().WithFunc(adaptCicFlow(mock.handleSend)).
+		WithParameterNames("req_ptr", "req_len", "out_ptr", "out_len").Export("send").
 		Instantiate(ctx); err != nil {
 		t.Fatalf("cic-flow host module: %v", err)
 	}
