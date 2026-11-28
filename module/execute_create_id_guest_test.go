@@ -106,12 +106,17 @@ func TestHostLoadExecuteCreateCarriesOCID(t *testing.T) {
 	if !strings.Contains(raw, `"resource_id":"`+want+`"`) {
 		t.Errorf("the JSON that crossed the ABI has no resource_id field:\n%s", raw)
 	}
-	// The guest signed and sent the create to the collection path — no id to template.
-	// The signed request-target is the FULL path actually sent, base_path
-	// included (opPath prepends binding.base_path) — not the registry path.
-	if len(mock.Signed) != 1 || !strings.Contains(mock.Signed[0], "(request-target): post /20160918/vcns") {
-		t.Errorf("signed string is not a POST to /20160918/vcns:\n%v", mock.Signed)
+	// The guest asked the host to POST the create to the collection path — no id to template. The
+	// path it names is the FULL path actually sent, base_path included (opPath prepends
+	// binding.base_path), not the registry path.
+	sent := mock.lastSend(t)
+	if mock.sendCount() != 1 || sent.Method != "POST" || sent.Path != "/20160918/vcns" {
+		t.Errorf("%d send calls, last = %s %s, want exactly 1 POST /20160918/vcns", mock.sendCount(), sent.Method, sent.Path)
 	}
+	if sent.Host != "iaas.eu-frankfurt-1.oraclecloud.com" {
+		t.Errorf("send host = %q, want iaas.eu-frankfurt-1.oraclecloud.com", sent.Host)
+	}
+	// What actually left the simulated host is still the base_path-prefixed collection URL.
 	if url := mock.lastActuate(t).URL; url != "https://iaas.eu-frankfurt-1.oraclecloud.com/20160918/vcns" {
 		t.Errorf("actuate URL = %q, want the base_path-prefixed collection path", url)
 	}

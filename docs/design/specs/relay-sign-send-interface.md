@@ -6,6 +6,18 @@ OCI-key entitlement/provisioning) · **Relay is read-only from here** — see
 [relay-requirements.md](../relay-requirements.md) (R1, R2) and
 [host-functions.md](host-functions.md).
 
+> **Superseded (O-1 WP-04, 2026-11-27).** The `sign` + `actuate` split below is **historical**:
+> the module now uses a single host import, `cic-flow.send`. The guest sends a **structured
+> request** (`method`, `host`, `path`, `intent{operation, resource_id, binding_digest}`, body);
+> the canonical string, the `date`, the content digest, the signature and the `Authorization`
+> header are all produced by the **host** (D-11, `pkg/hostsign` + `pkg/hostsign/ociprofile` in
+> the relay), and the host validates the target against the operator policy **before anything is
+> signed**. The guest never receives a signature or an `Authorization` header. The normative
+> contract is the relay's O-1 `03-sign-send-contract.md` (sections 3-8, 12). `abi.imports` is
+> therefore `cic-flow: [send]`. Guest-side `module/oci_sign.go` (the canonical string) is gone;
+> the test-side host mock (`module/host_mock_test.go`) keeps the old formula solely to simulate
+> the relay's role.
+
 > **As-built note.** The relay implemented this with two deltas from the original
 > proposal below, now the authoritative contract:
 > 1. **ABI** — the `git` host-module convention
