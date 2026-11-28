@@ -1640,8 +1640,10 @@ func ocidPrefixForKind(kind string) string {
 // string, the date, the content digest or the Authorization header, and it never names a key or a
 // key identifier beyond this manifest handle.
 const (
+	// ociSigningProfile names the host-side signing profile that builds the OCI canonical string.
 	ociSigningProfile = "http-signature:oci:draft-cavage@1"
-	ociKeyRef         = "oci/default"
+	// ociKeyRef is the manifest key handle the host resolves to an actual key; it is not a key id.
+	ociKeyRef = "oci/default"
 )
 
 // sendRequest is the structured cic-flow.send request (relay pkg/hostsign wireRequest v1). It has
