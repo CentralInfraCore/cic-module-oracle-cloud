@@ -1178,10 +1178,3 @@ func templatePath(path, resourceID string) string {
 	}
 	return path
 }
-
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
-}
