@@ -14,6 +14,20 @@ package main
 //     mints it in the response), and the observation profile forbids every method but GET/HEAD, so
 //     the host refuses it.
 //
+// WHICH code comes back was measured against the relay's own hostsign.Policy.ValidateTarget, not
+// assumed (the WP-04b job's output/evidence/50-ss03-relay-measurement.log):
+//
+//   intent.operation as the module sends it ("poll", "execute" with no policy entry) -> POLICY_TARGET
+//   the same paths under an operation the policy DOES define ("observe")             -> POLICY_PATH
+//                                                                                       (Work Request path)
+//                                                                                    -> POLICY_METHOD
+//                                                                                       (POST under
+//                                                                                        ObservationOnly)
+//
+// ValidateTarget reports the FIRST failing step in a fixed order (operation, host, method, resource,
+// binding, path), which is why an unknown operation name wins over the path and method reasons. Both
+// codes are pinned below: the module must surface whichever the host chose, unchanged.
+//
 // These tests pin that the module (a) still sends exactly the request described above, so the
 // deviation is visible rather than hidden, and (b) surfaces the host's refusal with the host's own
 // named code, never as a success and never as a generic error. The guest does not pre-empt the
@@ -33,11 +47,20 @@ func denyWith(code string) func(int, cicFlowSend) (string, string, string) {
 	}
 }
 
-// Poll's target is a Work Request path, which the frozen SS-03 policy cannot express: the host
-// answers POLICY_PATH and the module reports it as a transport-class error carrying that code.
+// Poll's target is a Work Request path, which the frozen SS-03 policy cannot express. The host
+// answers POLICY_TARGET (measured) or POLICY_PATH (when the operation name is in the policy), and
+// the module reports it as a transport-class error carrying that very code.
 func TestPollWorkRequestTargetIsDeniedWithPolicyPath(t *testing.T) {
+	for _, code := range []string{hostCodePolicyTarget, hostCodePolicyPath} {
+		t.Run(code, func(t *testing.T) { pollDeniedWith(t, code) })
+	}
+}
+
+// pollDeniedWith runs one poll against a host that refuses with the given contract code.
+func pollDeniedWith(t *testing.T, code string) {
+	t.Helper()
 	mock := newPollMock()
-	mock.Refuse = denyWith(hostCodePolicyPath)
+	mock.Refuse = denyWith(code)
 	res := callPoll(t, mock, pollRequest{Binding: pollBinding(pollVersion),
 		WorkRequestID: "ocid1.workrequest.oc1..aaaaaaaapoll"})
 
@@ -47,8 +70,8 @@ func TestPollWorkRequestTargetIsDeniedWithPolicyPath(t *testing.T) {
 	if res.Error.Class != classTransport {
 		t.Errorf("error class = %q, want %q", res.Error.Class, classTransport)
 	}
-	if !strings.Contains(res.Error.Message, "send denied: "+hostCodePolicyPath) {
-		t.Errorf("message = %q, want it to carry %q", res.Error.Message, "send denied: "+hostCodePolicyPath)
+	if !strings.Contains(res.Error.Message, "send denied: "+code) {
+		t.Errorf("message = %q, want it to carry %q", res.Error.Message, "send denied: "+code)
 	}
 	// The module did ask -- once -- and the host refused before signing or sending anything.
 	if mock.sendCount() != 1 {
@@ -73,10 +96,19 @@ func TestPollWorkRequestTargetIsDeniedWithPolicyPath(t *testing.T) {
 }
 
 // A create is a POST with no resource id yet; the observation profile forbids it. The host answers
-// POLICY_METHOD, and the step fails with that code and no resource_id -- and is not retried.
+// POLICY_TARGET (measured) or POLICY_METHOD (when the operation name is in the policy), and the
+// step fails with that code and no resource_id -- and is not retried.
 func TestCreateIsDeniedWithPolicyMethod(t *testing.T) {
+	for _, code := range []string{hostCodePolicyTarget, hostCodePolicyMethod} {
+		t.Run(code, func(t *testing.T) { createDeniedWith(t, code) })
+	}
+}
+
+// createDeniedWith runs one create plan against a host that refuses with the given contract code.
+func createDeniedWith(t *testing.T, code string) {
+	t.Helper()
 	mock := &cicFlowMock{Reply: replyWith(200, `{"id":"ocid1.vcn.oc1..created"}`, nil)}
-	mock.Refuse = denyWith(hostCodePolicyMethod)
+	mock.Refuse = denyWith(code)
 	_, er := execVCN(t, mock, createVcnOp, createBinding, `{"compartmentId":"ocid1.compartment..c"}`)
 
 	if er.Status != "failed" {
@@ -86,8 +118,8 @@ func TestCreateIsDeniedWithPolicyMethod(t *testing.T) {
 		t.Fatalf("%d steps, want 1", len(er.Steps))
 	}
 	step := er.Steps[0]
-	if !strings.Contains(step.Error, "send denied: "+hostCodePolicyMethod) {
-		t.Errorf("step error = %q, want it to carry %q", step.Error, "send denied: "+hostCodePolicyMethod)
+	if !strings.Contains(step.Error, "send denied: "+code) {
+		t.Errorf("step error = %q, want it to carry %q", step.Error, "send denied: "+code)
 	}
 	if step.ResourceID != "" {
 		t.Errorf("steps[0].resource_id = %q, want empty: nothing was created", step.ResourceID)
