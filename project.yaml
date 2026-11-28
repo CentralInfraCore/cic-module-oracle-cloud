@@ -38,7 +38,7 @@ metadata:
   # the build-gap between the prepare and finalize release phases. The
   # finalization phase (tools/infra.py: _resign_with_build_hash) requires
   # this to be non-empty and re-signs metadata.sign to cover it.
-  buildHash: 7080b3423beded8b64891afdcf2e6f6d8bec6ebeaa88aecbb1b06e149b54ef86
+  buildHash: 88ff6b03befeb87630b7e34611ec34455b7f82cda83828757836301f96f408eb
   cicSign: 'TBD'
   cicSignedCA:
     certificate: "TBD — filled by the release process with the CIC Root CA certificate"
@@ -80,15 +80,15 @@ abi:
     - invoke
     - destroy
   # Host functions this module REQUIRES for the sign+send ops (observe/execute/
-  # poll/invoke/destroy). Declaration only — the module does not define the host
-  # side. Names are provisional until settled with the relay (relay-requirements.md
-  # R1/R2); today the trust-flow is native-FFI, not a wasm import, so nothing is
-  # imported at the wasm level yet. describe() reports this surface.
+  # poll/invoke/destroy): cic-flow.send only. The guest describes the request
+  # structurally (method, host, path, intent, body); the HOST validates the target
+  # against the operator policy, signs and sends (O-1 WP-04, contract 03 sign+send).
+  # The raw sign/actuate imports are gone: the guest never builds a signature or an
+  # Authorization header. describe() reports this surface.
   imports:
     - module: cic-flow
       functions:
-        - sign
-        - actuate
+        - send
 # capability_manifest declares what this module needs from the host; the host
 # enforces exactly this (relay-requirements.md R3). This is the OCI provisioner's
 # target reach — egress to OCI's REST endpoints and a sign-only OCI key handle.
